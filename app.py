@@ -28,7 +28,7 @@ st.write("Enter HRV (Heart Rate Variability) features manually or upload a CSV f
 option = st.radio("Select Input Method:", ("Manual Entry", "Upload CSV"))
 
 # ------------------------------
-# Manual Input
+# Manual Input (6 features)
 # ------------------------------
 if option == "Manual Entry":
     col1, col2 = st.columns(2)
@@ -42,10 +42,9 @@ if option == "Manual Entry":
         pnn50 = st.number_input("pNN50 (%)", 0, 100, 20)
         lf = st.number_input("LF Power (ms²)", 100, 5000, 800)
         hf = st.number_input("HF Power (ms²)", 100, 5000, 600)
-        lf_hf = st.number_input("LF/HF Ratio", 0.1, 10.0, 1.5)
 
     if st.button("Predict Stress Level"):
-        input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, lf_hf]])
+        input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf]])
         input_scaled = preprocess['scaler'].transform(input_data)
 
         rf_pred = rf_model.predict_proba(input_scaled)[0, 1]
@@ -63,10 +62,10 @@ if option == "Manual Entry":
             st.error("High Stress / Potential Risk! Seek Medical Attention.")
 
 # ------------------------------
-# CSV Upload
+# CSV Upload (6 features)
 # ------------------------------
 elif option == "Upload CSV":
-    st.write("Upload a CSV file containing HRV features (mean_hr, sdnn, rmssd, pnn50, lf, hf, lf_hf):")
+    st.write("Upload a CSV file containing HRV features (mean_hr, sdnn, rmssd, pnn50, lf, hf):")
     uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
 
     if uploaded_file is not None:
@@ -74,7 +73,9 @@ elif option == "Upload CSV":
         st.dataframe(df.head())
 
         try:
-            X = preprocess.transform(df)
+            df = df[['mean_hr', 'sdnn', 'rmssd', 'pnn50', 'lf', 'hf']]
+            X = preprocess['scaler'].transform(df)
+
             rf_pred = rf_model.predict_proba(X)[:, 1]
             xgb_pred = xgb_model.predict_proba(X)[:, 1]
             avg_pred = (rf_pred + xgb_pred) / 2
