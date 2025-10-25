@@ -46,7 +46,7 @@ if option == "Manual Entry":
 
     if st.button("Predict Stress Level"):
         input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, lf_hf]])
-        input_scaled = preprocess.transform(input_data)
+        input_scaled = preprocess['scaler'].transform(input_data)
 
         rf_pred = rf_model.predict_proba(input_scaled)[0, 1]
         xgb_pred = xgb_model.predict_proba(input_scaled)[0, 1]
