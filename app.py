@@ -1,95 +1,111 @@
-# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
 import joblib
+from tensorflow.keras.models import load_model
+import matplotlib.pyplot as plt
+import os
 
 # ------------------------------
-# Load Models
+# LOAD ALL MODELS & PREPROCESSORS
 # ------------------------------
 @st.cache_resource
-def load_models():
-    preprocess = joblib.load('preprocess.joblib')
-    rf_model = joblib.load('random_forest_hrv.joblib')
-    xgb_model = joblib.load('xgboost_hrv.joblib')
-    return preprocess, rf_model, xgb_model
+def load_all():
+    pre = joblib.load("models/preprocess.joblib")
+    rf = joblib.load("models/rf_hrv.joblib")
+    xgb = joblib.load("models/xgb_hrv.joblib")
+    mlp = load_model("models/mlp_hrv.h5")
+    thr = np.load("models/adaptive_thresholds.npy", allow_pickle=True).item()
+    return pre, rf, xgb, mlp, thr
 
-preprocess, rf_model, xgb_model = load_models()
-
-# ------------------------------
-# Streamlit UI
-# ------------------------------
-st.set_page_config(page_title="AI-Based Heart & Stress Monitoring", layout="centered")
-
-st.title("AI-Based Real-Time Heart Rate & Stress Monitoring")
-st.markdown("### Early Heart Attack Risk Prediction using Non-Wearable Sensors")
-st.write("Enter HRV (Heart Rate Variability) features manually or upload a CSV file to predict stress level.")
-
-option = st.radio("Select Input Method:", ("Manual Entry", "Upload CSV"))
+pre, rf, xgb, mlp, thr = load_all()
+cols = pre['feature_cols']
+sc = pre['scaler']
+imp = pre['imputer']
 
 # ------------------------------
-# Manual Input (6 features)
+# STREAMLIT PAGE SETUP
 # ------------------------------
-if option == "Manual Entry":
-    col1, col2 = st.columns(2)
+st.set_page_config(page_title="AI Heart & Stress Monitor", layout="wide")
+st.title("AI-Based Real-Time Heart Rate & Stress Monitoring System")
+st.markdown("*Early Heart Attack Risk Prediction using Non-Wearable Sensors*")
 
-    with col1:
-        mean_hr = st.number_input("Mean Heart Rate (bpm)", 40, 200, 75)
-        sdnn = st.number_input("SDNN (ms)", 10, 200, 50)
-        rmssd = st.number_input("RMSSD (ms)", 10, 200, 30)
-
-    with col2:
-        pnn50 = st.number_input("pNN50 (%)", 0, 100, 20)
-        lf = st.number_input("LF Power (ms²)", 100, 5000, 800)
-        hf = st.number_input("HF Power (ms²)", 100, 5000, 600)
-
-    if st.button("Predict Stress Level"):
-        input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf]])
-        input_scaled = preprocess['scaler'].transform(input_data)
-
-        rf_pred = rf_model.predict_proba(input_scaled)[0, 1]
-        xgb_pred = xgb_model.predict_proba(input_scaled)[0, 1]
-        avg_pred = (rf_pred + xgb_pred) / 2
-
-        st.subheader("Predicted Stress Probability:")
-        st.metric(label="Stress Probability", value=f"{avg_pred*100:.2f}%")
-
-        if avg_pred < 0.4:
-            st.success("Low Stress - Normal Condition")
-        elif avg_pred < 0.7:
-            st.warning("Moderate Stress - Monitor Regularly")
-        else:
-            st.error("High Stress / Potential Risk! Seek Medical Attention.")
+mode = st.radio("Select Input Mode", ["Manual Input", "Upload CSV File"])
 
 # ------------------------------
-# CSV Upload (6 features)
+# MANUAL INPUT MODE
 # ------------------------------
-elif option == "Upload CSV":
-    st.write("Upload a CSV file containing HRV features (mean_hr, sdnn, rmssd, pnn50, lf, hf):")
-    uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
+if mode == "Manual Input":
+    st.subheader("Enter HRV Feature Values")
+    cols_layout = st.columns(len(cols))
 
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        st.dataframe(df.head())
+    inputs = {}
+    for i, c in enumerate(cols):
+        with cols_layout[i % len(cols_layout)]:
+            inputs[c] = st.number_input(c, value=50.0, step=0.1)
 
-        try:
-            df = df[['mean_hr', 'sdnn', 'rmssd', 'pnn50', 'lf', 'hf']]
-            X = preprocess['scaler'].transform(df)
+    df_in = pd.DataFrame([inputs])
 
-            rf_pred = rf_model.predict_proba(X)[:, 1]
-            xgb_pred = xgb_model.predict_proba(X)[:, 1]
-            avg_pred = (rf_pred + xgb_pred) / 2
+# ------------------------------
+# CSV UPLOAD MODE
+# ------------------------------
+else:
+    uploaded_file = st.file_uploader("Upload your HRV CSV file", type=["csv"])
+    if uploaded_file:
+        df_in = pd.read_csv(uploaded_file)
+        st.dataframe(df_in.head())
+    else:
+        df_in = None
 
-            df['Stress_Probability'] = avg_pred
-            df['Stress_Level'] = pd.cut(avg_pred,
-                                        bins=[0, 0.4, 0.7, 1],
-                                        labels=["Low", "Moderate", "High"])
+# ------------------------------
+# PREDICTION LOGIC
+# ------------------------------
+if st.button("Predict Stress Level") and df_in is not None:
+    X = imp.transform(df_in[cols])
+    X = sc.transform(X)
 
-            st.subheader("Prediction Results:")
-            st.dataframe(df)
+    p_rf = rf.predict_proba(X)[:, 1]
+    p_xgb = xgb.predict_proba(X)[:, 1]
+    p_mlp = mlp.predict(X).flatten()
+    p_avg = (p_rf + p_xgb + p_mlp) / 3
 
-            csv_out = df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Results as CSV", csv_out, "stress_predictions.csv", "text/csv")
+    low, high = thr['low'], thr['high']
 
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
+    def classify(p):
+        if p < low: return "Low Stress"
+        elif p < high: return "Moderate Stress"
+        else: return "High Stress"
+
+    df_in['Stress_Probability'] = p_avg
+    df_in['Stress_Level'] = [classify(p) for p in p_avg]
+
+    st.success("Prediction Completed")
+    st.dataframe(df_in)
+
+    fig, ax = plt.subplots()
+    ax.bar(['RF', 'XGB', 'MLP', 'Ensemble'], [p_rf[0], p_xgb[0], p_mlp[0], p_avg[0]])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Predicted Stress Probability")
+    st.pyplot(fig)
+
+    # ------------------------------
+    # OPTIONAL: GPT EXPLANATION
+    # ------------------------------
+    st.markdown("AI Explanation (LLM Integration)")
+    use_llm = st.checkbox("Generate Explanation using GPT")
+    if use_llm:
+        import openai
+        key = st.text_input("Enter your OpenAI API Key:", type="password")
+        if key:
+            openai.api_key = key
+            prompt = f"The stress prediction probability is {p_avg[0]:.2f}. Based on HRV features {inputs}, explain the possible physiological reason and suggest 3 personalized stress management tips."
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200,
+                    temperature=0.7
+                )
+                st.info(response['choices'][0]['message']['content'])
+            except Exception as e:
+                st.error(f"OpenAI API error: {e}")
