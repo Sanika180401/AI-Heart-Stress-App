@@ -1,7 +1,25 @@
-streamlit==1.39.0
-pandas==2.2.2
 numpy==1.26.4
+pandas==2.2.2
 scikit-learn==1.5.2
 xgboost==2.1.1
-matplotlib==3.9.1
 joblib==1.4.2
+
+# Deep Learning (for MLP)
+tensorflow==2.14.0
+keras==2.14.0
+h5py==3.10.0
+
+# Visualization
+matplotlib==3.9.2
+seaborn==0.13.2
+shap==0.45.1
+
+# Streamlit Web App
+streamlit==1.38.0
+
+# LLM Integration
+openai==1.47.1
+
+# Utility
+protobuf==3.20.3
+dill==0.3.8
