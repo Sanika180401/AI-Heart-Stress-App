@@ -28,7 +28,7 @@ def load_all():
     pre = joblib.load(safe_load("preprocess.joblib"))
     rf = joblib.load(safe_load("rf_hrv.joblib"))
     xgb = joblib.load(safe_load("xgb_hrv.joblib"))
-    mlp = load_model(safe_load("mlp_hrv.h5"))
+    mlp = load_model(safe_load("mlp_hrv_v2.h5"))
     thr = np.load(safe_load("adaptive_thresholds.npy"), allow_pickle=True).item()
     return pre, rf, xgb, mlp, thr
 
