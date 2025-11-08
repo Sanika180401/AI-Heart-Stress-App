@@ -42,7 +42,7 @@ def load_all():
     
     # Load MLP (TensorFlow)
     try:
-        mlp = load_model(safe_load("mlp_hrv_v2.h5"), compile=False)
+        mlp = load_model(safe_load("mlp_hrv_clean.h5"), compile=False)
     except Exception as e:
         st.warning(f"Could not load mlp_hrv_v2.h5: {e}")
         mlp = None
