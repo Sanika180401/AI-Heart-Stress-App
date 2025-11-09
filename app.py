@@ -49,7 +49,7 @@ def load_all():
 
     # Load MLP safely
     try:
-        mlp = load_model(safe_load("mlp_hrv_compat.h5"), compile=False)
+        mlp = load_model(safe_load("mlp_hrv_fixed.h5"), compile=False)
     except Exception as e:
         st.warning(f"Could not load mlp_hrv_clean.h5: {e}")
         mlp = None
