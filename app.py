@@ -49,7 +49,7 @@ def load_all():
 
     # Load fixed MLP model (converted version)
     try:
-        mlp = load_model(safe_load("mlp_hrv_fixed.keras"), compile=False)
+        mlp = load_model(safe_load("mlp_hrv_clean_fixed.keras"), compile=False)
     except Exception as e:
         st.warning(f"Could not load MLP model: {e}")
         mlp = None
