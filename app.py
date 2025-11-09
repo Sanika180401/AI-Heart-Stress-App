@@ -6,12 +6,11 @@ import streamlit as st
 import shap
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import load_model
-from xgboost import XGBClassifier
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # ===============================================================
-# STREAMLIT CONFIG — must be first
+# STREAMLIT CONFIG — MUST BE FIRST
 # ===============================================================
 st.set_page_config(page_title="AI Heart & Stress Monitoring", layout="wide")
 st.title("AI-Based Real-Time Heart Rate & Stress Monitoring")
@@ -24,7 +23,7 @@ BASE_PATH = os.path.dirname(__file__)
 MODELS_PATH = os.path.join(BASE_PATH, "models")
 
 def safe_load(filename):
-    """Safely return model path, raise error if missing."""
+    """Safely locate model files."""
     path = os.path.join(MODELS_PATH, filename)
     if not os.path.exists(path):
         st.error(f"Missing file: {path}")
@@ -36,18 +35,18 @@ def safe_load(filename):
 # ===============================================================
 @st.cache_resource
 def load_all():
-    """Load all trained models and preprocessing pipeline."""
+    """Load all models and preprocessors safely."""
     pre = joblib.load(safe_load("preprocess.joblib"))
     rf = joblib.load(safe_load("rf_hrv.joblib"))
 
-    # Load XGBoost model if available
+    # Load XGBoost if available
     try:
         xgb = joblib.load(safe_load("xgb_hrv.joblib"))
     except Exception as e:
         st.warning(f"Could not load XGBoost model: {e}")
         xgb = None
 
-    # Load fixed MLP model (converted version)
+    # Load MLP — new clean version compatible with TF 2.19
     try:
         mlp = load_model(safe_load("mlp_hrv_clean_fixed.keras"), compile=False)
     except Exception as e:
@@ -57,7 +56,6 @@ def load_all():
     thr = np.load(safe_load("adaptive_thresholds.npy"), allow_pickle=True).item()
     return pre, rf, xgb, mlp, thr
 
-# Load all once
 pre, rf, xgb, mlp, thr = load_all()
 
 # ===============================================================
@@ -71,19 +69,19 @@ except Exception:
     st.warning("OpenAI not configured — GPT explanations disabled.")
 
 def gpt_explain(stress_level, prob):
-    """Optional GPT-based advice."""
+    """Optional GPT-based stress explanation."""
     if not openai or not openai.api_key:
         return "(GPT explanation unavailable — missing API key.)"
     prompt = f"""
-    A health AI predicted a stress probability of {prob*100:.2f}%.
-    Detected stress category: {stress_level}.
-    Write a short, friendly explanation and give 3 practical tips to reduce stress.
+    The model predicted a stress probability of {prob*100:.2f}%.
+    Detected stress level: {stress_level}.
+    Provide a short human explanation and 3 simple stress-relief tips.
     """
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a calm and informative medical AI assistant."},
+                {"role": "system", "content": "You are a calm, medical AI assistant."},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -95,7 +93,7 @@ def gpt_explain(stress_level, prob):
 # PREDICTION FUNCTION
 # ===============================================================
 def predict_stress(input_data):
-    """Predict stress level using ensemble averaging."""
+    """Predict stress using RF + XGB + MLP ensemble."""
     input_scaled = pre["scaler"].transform(input_data)
     preds = [rf.predict_proba(input_scaled)[:, 1]]
 
@@ -117,12 +115,12 @@ def predict_stress(input_data):
     return float(avg_pred[0]), level
 
 # ===============================================================
-# USER INPUT OPTIONS
+# INPUT OPTIONS
 # ===============================================================
 option = st.radio("Select Input Method:", ("Manual Entry", "Upload CSV"))
 
 # ===============================================================
-# MANUAL ENTRY MODE
+# MANUAL ENTRY
 # ===============================================================
 if option == "Manual Entry":
     st.subheader("Enter HRV & Physiological Features")
@@ -156,14 +154,14 @@ if option == "Manual Entry":
         else:
             st.error(level)
 
-        st.markdown("#### GPT-based Explanation:")
+        st.markdown("#### GPT Explanation:")
         st.info(gpt_explain(level, prob))
 
 # ===============================================================
-# CSV UPLOAD MODE
+# CSV UPLOAD
 # ===============================================================
 elif option == "Upload CSV":
-    st.write("Upload a CSV with columns: mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2, temp, eda")
+    st.write("Upload CSV with 10 columns: mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2, temp, eda")
     uploaded_file = st.file_uploader("Choose CSV File", type=["csv"])
 
     if uploaded_file:
@@ -181,11 +179,13 @@ elif option == "Upload CSV":
             low, high = thr["low"], thr["high"]
 
             df["Stress_Probability"] = avg_pred
-            df["Stress_Level"] = pd.cut(avg_pred, bins=[0, low, high, 1], labels=["Low", "Moderate", "High"])
+            df["Stress_Level"] = pd.cut(avg_pred, bins=[0, low, high, 1],
+                                        labels=["Low", "Moderate", "High"])
 
             st.dataframe(df)
             csv_out = df.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Results", csv_out, "stress_results.csv", "text/csv")
+            st.download_button("Download Results", csv_out,
+                               "stress_results.csv", "text/csv")
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
@@ -202,7 +202,8 @@ if st.button("Show Feature Importance (SHAP)"):
         shap.summary_plot(
             shap_values[1] if isinstance(shap_values, list) else shap_values,
             X_sample,
-            feature_names=getattr(pre["scaler"], "feature_names_in_", [f"Feature {i+1}" for i in range(X_sample.shape[1])]),
+            feature_names=getattr(pre["scaler"], "feature_names_in_",
+                                  [f"Feature {i+1}" for i in range(X_sample.shape[1])]),
             show=False
         )
         st.pyplot(plt)
