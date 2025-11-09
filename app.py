@@ -139,6 +139,14 @@ if option == "Manual Entry":
         hf = st.number_input("HF Power (ms²)", 100, 5000, 600)
         sd2 = st.number_input("SD2 (ms)", 5.0, 200.0, 40.0)
 
+    col3, col4 = st.columns(2)
+    with col3:
+        temp = st.number_input("Skin Temperature (°C)", 30.0, 40.0, 36.5)
+    with col4:
+        eda = st.number_input("Electrodermal Activity (µS)", 0.1, 10.0, 2.0)
+
+    input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2, temp, eda]])
+
     if st.button("Predict Stress Level"):
         input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2]])
         prob, level = predict_stress(input_data)
