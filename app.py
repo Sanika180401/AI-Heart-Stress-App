@@ -11,13 +11,20 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # ----------------------------
-# PATH SETUP (Avoid FileNotFound Errors)
+# STREAMLIT CONFIG (MUST BE FIRST)
+# ----------------------------
+st.set_page_config(page_title="AI Heart & Stress Monitoring", layout="wide")
+st.title("AI-Based Real-Time Heart Rate & Stress Monitoring")
+st.markdown("### Early Heart Attack Risk Prediction using Non-Wearable Sensors")
+
+# ----------------------------
+# PATH SETUP
 # ----------------------------
 BASE_PATH = os.path.dirname(__file__)
 MODELS_PATH = os.path.join(BASE_PATH, "models")
 
 def safe_load(filename):
-    """Ensure path exists for each model file."""
+    """Ensures the model file exists and returns its absolute path."""
     path = os.path.join(MODELS_PATH, filename)
     if not os.path.exists(path):
         st.error(f"Missing file: {path}")
@@ -32,53 +39,45 @@ def load_all():
     """Load all pre-trained models and preprocessors."""
     pre = joblib.load(safe_load("preprocess.joblib"))
     rf = joblib.load(safe_load("rf_hrv.joblib"))
-    
-    # Load XGBoost safely (if available)
+
+    # Load XGBoost safely
     try:
         xgb = joblib.load(safe_load("xgb_hrv.joblib"))
-    except:
+    except Exception:
         st.warning("XGBoost model not found — skipping.")
         xgb = None
-    
-    # Load MLP (TensorFlow)
+
+    # Load MLP safely
     try:
         mlp = load_model(safe_load("mlp_hrv_clean.h5"), compile=False)
     except Exception as e:
-        st.warning(f"Could not load mlp_hrv_v2.h5: {e}")
+        st.warning(f"Could not load mlp_hrv_clean.h5: {e}")
         mlp = None
 
     thr = np.load(safe_load("adaptive_thresholds.npy"), allow_pickle=True).item()
     return pre, rf, xgb, mlp, thr
 
+# Load once
 pre, rf, xgb, mlp, thr = load_all()
 
 # ----------------------------
-# STREAMLIT PAGE CONFIGURATION
-# ----------------------------
-st.set_page_config(page_title="AI Heart & Stress Monitoring", layout="wide")
-st.title("AI-Based Real-Time Heart Rate & Stress Monitoring")
-st.markdown("### Early Heart Attack Risk Prediction using Non-Wearable Sensors")
-
-option = st.radio("Select Input Method:", ("Manual Entry", "Upload CSV"))
-
-# ----------------------------
-# GPT EXPLANATION FUNCTION (Optional)
+# GPT EXPLANATION FUNCTION (OPTIONAL)
 # ----------------------------
 try:
     import openai
     openai.api_key = st.secrets.get("OPENAI_API_KEY", None)
 except:
-    st.warning("OpenAI not configured. GPT explanations will be disabled.")
+    st.warning("OpenAI not configured. GPT explanations disabled.")
     openai = None
 
 def gpt_explain(stress_level, prob):
-    """Generate LLM-based stress explanation (optional)."""
+    """Generate LLM-based explanation for stress prediction."""
     if not openai or not openai.api_key:
-        return "(GPT explanation unavailable — API key missing)"
+        return "(GPT explanation unavailable — missing API key)"
     prompt = f"""
-    A health monitoring AI predicted a stress probability of {prob*100:.2f}%.
-    The detected stress level is: {stress_level}.
-    Write a short, friendly explanation and 3 personalized lifestyle tips.
+    The AI system predicted a stress probability of {prob*100:.2f}%.
+    Detected stress category: {stress_level}.
+    Provide a short, friendly explanation and 3 personalized stress-reduction tips.
     """
     try:
         response = openai.ChatCompletion.create(
@@ -96,7 +95,7 @@ def gpt_explain(stress_level, prob):
 # STRESS PREDICTION FUNCTION
 # ----------------------------
 def predict_stress(input_data):
-    """Predict stress level using ensemble models."""
+    """Predict stress using ensemble of models."""
     input_scaled = pre["scaler"].transform(input_data)
     preds = []
 
@@ -118,7 +117,12 @@ def predict_stress(input_data):
     return avg_pred[0], level
 
 # ----------------------------
-# MANUAL ENTRY MODE
+# USER INPUT MODE SELECTION
+# ----------------------------
+option = st.radio("Select Input Method:", ("Manual Entry", "Upload CSV"))
+
+# ----------------------------
+# MANUAL INPUT MODE
 # ----------------------------
 if option == "Manual Entry":
     st.subheader("Enter HRV Features")
@@ -141,6 +145,7 @@ if option == "Manual Entry":
 
         st.subheader("Prediction Result")
         st.metric("Stress Probability", f"{prob*100:.2f}%")
+
         if level == "Low Stress":
             st.success(level)
         elif level == "Moderate Stress":
@@ -181,19 +186,21 @@ elif option == "Upload CSV":
             st.error(f"Error processing file: {e}")
 
 # ----------------------------
-# OPTIONAL SHAP VISUALIZATION
+# SHAP FEATURE IMPORTANCE
 # ----------------------------
 st.markdown("---")
 if st.button("Show Feature Importance (SHAP)"):
     try:
         explainer = shap.TreeExplainer(rf)
-        X_sample = np.random.rand(50, len(pre["scaler"].mean_))  # dummy sample for visualization
+        X_sample = np.random.rand(50, len(pre["scaler"].mean_))  # dummy sample
         shap_values = explainer.shap_values(X_sample)
         plt.title("Feature Importance (SHAP Summary)")
-        shap.summary_plot(shap_values[1] if isinstance(shap_values, list) else shap_values,
-                          X_sample,
-                          feature_names=pre["scaler"].feature_names_in_,
-                          show=False)
+        shap.summary_plot(
+            shap_values[1] if isinstance(shap_values, list) else shap_values,
+            X_sample,
+            feature_names=pre["scaler"].feature_names_in_,
+            show=False
+        )
         st.pyplot(plt)
     except Exception as e:
         st.error(f"Error displaying SHAP plot: {e}")
