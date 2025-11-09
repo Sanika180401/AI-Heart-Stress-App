@@ -148,7 +148,7 @@ if option == "Manual Entry":
     input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2, temp, eda]])
 
     if st.button("Predict Stress Level"):
-        input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2]])
+        input_data = np.array([[mean_hr, sdnn, rmssd, pnn50, lf, hf, sd1, sd2, temp, eda]])
         prob, level = predict_stress(input_data)
 
         st.subheader("Prediction Result")
