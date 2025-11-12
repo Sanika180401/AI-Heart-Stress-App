@@ -195,15 +195,14 @@ elif option == "Upload CSV":
 st.markdown("---")
 if st.button("Show Feature Importance (SHAP)"):
     try:
+        feature_names = getattr(pre["scaler"], "feature_names_in_", [f"Feature {i+1}" for i in range(len(pre["scaler"].mean_))])
+        X_sample = pd.DataFrame(np.random.rand(50, len(feature_names)), columns=feature_names)
         explainer = shap.TreeExplainer(rf)
-        X_sample = np.random.rand(50, len(pre["scaler"].mean_))
         shap_values = explainer.shap_values(X_sample)
         plt.title("Feature Importance (SHAP Summary)")
         shap.summary_plot(
             shap_values[1] if isinstance(shap_values, list) else shap_values,
             X_sample,
-            feature_names=getattr(pre["scaler"], "feature_names_in_",
-                                  [f"Feature {i+1}" for i in range(X_sample.shape[1])]),
             show=False
         )
         st.pyplot(plt)
