@@ -153,7 +153,7 @@ if option == "Manual Entry":
         st.info(gpt_explain(level, prob))
 
 # ===============================================================
-# WEBCAM EMOTION ANALYSIS MODE
+# WEBCAM EMOTION ANALYSIS MODE (FIXED & WORKING)
 # ===============================================================
 elif option == "Webcam Emotion Analysis":
 
@@ -165,81 +165,98 @@ elif option == "Webcam Emotion Analysis":
 
         def transform(self, frame):
             img = frame.to_ndarray(format="bgr24")
+
             try:
-                res = DeepFace.analyze(img, actions=['emotion'], enforce_detection=False)
-                emo = res.get('emotion', None)
-                if emo:
-                    self.buffer.append(emo)
-            except:
+                result = DeepFace.analyze(
+                    img,
+                    actions=['emotion'],
+                    enforce_detection=False
+                )
+
+                if isinstance(result, list):
+                    result = result[0]
+
+                if "emotion" in result:
+                    self.buffer.append(result["emotion"])
+
+            except Exception:
                 pass
 
+            # Display dominant emotion
             if len(self.buffer) > 0:
-                dom = max(self.buffer[-1], key=self.buffer[-1].get)
-                cv2.putText(img, f"Emotion: {dom}", (10,30),
-                            cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
+                last = self.buffer[-1]
+                dominant = max(last, key=last.get)
+                cv2.putText(
+                    img,
+                    f"Emotion: {dominant}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2
+                )
+
             return img
 
 
     webrtc_ctx = webrtc_streamer(
-        key="cam",
+        key="webcam",
         video_transformer_factory=EmotionTransformer,
         media_stream_constraints={"video": True, "audio": False}
     )
 
     if st.button("Capture & Predict"):
 
-        trans = webrtc_ctx.video_transformer
+        if not webrtc_ctx.video_transformer:
+            st.error("Camera not started.")
+            st.stop()
 
-        if trans is None or len(trans.buffer) == 0:
-            st.error("No emotion data captured. Please face the camera for 10-15 seconds.")
-        else:
-            st.success(f"Frames captured: {len(trans.buffer)}")
+        buffer = webrtc_ctx.video_transformer.buffer
 
-            emo_df = pd.DataFrame(trans.buffer)
+        if len(buffer) < 10:
+            st.error("No emotion data captured. Face camera for 10-15 seconds.")
+            st.stop()
 
-            # Aggregate emotion features
-            agg = {}
-            for col in emo_df.columns:
-                agg[f"{col}_mean"] = emo_df[col].mean()
+        st.success(f"Frames captured: {len(buffer)}")
 
-            # Default HRV values (can be replaced by sensors later)
-            hrv_features = {
-                "mean_hr": 75,
-                "sdnn": 50,
-                "rmssd": 30,
-                "pnn50": 20,
-                "lf": 800,
-                "hf": 600,
-                "sd1": 20,
-                "sd2": 40,
-                "temp": 36.5,
-                "eda": 2.0
-            }
+        emo_df = pd.DataFrame(buffer)
 
-            final_features = list(hrv_features.values()) + list(agg.values())
-            input_array = np.array([final_features])
+        agg = {}
+        for col in emo_df.columns:
+            agg[f"{col}_mean"] = emo_df[col].mean()
 
-            try:
-                input_scaled = pre["scaler"].transform(input_array)
+        hrv_features = [
+            75,   # mean_hr
+            50,   # sdnn
+            30,   # rmssd
+            20,   # pnn50
+            800,  # lf
+            600,  # hf
+            20,   # sd1
+            40,   # sd2
+            36.5, # temp
+            2.0   # eda
+        ]
 
-                preds = [rf.predict_proba(input_scaled)[:,1]]
-                if xgb:
-                    preds.append(xgb.predict_proba(input_scaled)[:,1])
-                if mlp:
-                    preds.append(mlp.predict(input_scaled).flatten())
+        final_features = hrv_features + list(agg.values())
+        input_array = np.array([final_features])
 
-                avg_pred = float(np.mean(preds))
+        input_scaled = pre["scaler"].transform(input_array)
 
-                level = "Low Stress" if avg_pred < thr["low"] else \
-                        "Moderate Stress" if avg_pred < thr["high"] else \
-                        "High Stress"
+        preds = [rf.predict_proba(input_scaled)[:,1]]
+        if xgb:
+            preds.append(xgb.predict_proba(input_scaled)[:,1])
+        if mlp:
+            preds.append(mlp.predict(input_scaled).flatten())
 
-                st.metric("Stress Probability", f"{avg_pred*100:.2f}%")
-                st.success(f"Stress Level: {level}")
-                st.info(gpt_explain(level, avg_pred))
+        avg_pred = float(np.mean(preds))
 
-            except Exception as e:
-                st.error(f"Prediction failed: {e}")
+        level = "Low" if avg_pred < thr["low"] else \
+                "Moderate" if avg_pred < thr["high"] else "High"
+
+        st.metric("Stress Probability", f"{avg_pred*100:.2f}%")
+        st.success(f"Stress Level: {level}")
+        st.info(gpt_explain(level, avg_pred))
 
 # ===============================================================
 # SHAP FEATURE IMPORTANCE
