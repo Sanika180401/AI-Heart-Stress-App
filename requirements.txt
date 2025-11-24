@@ -5,10 +5,13 @@ joblib==1.4.2
 scikit-learn==1.5.2
 xgboost==2.1.2
 shap==0.46.0
-deepface
 tensorflow==2.19.0
 keras==3.5.0
 streamlit==1.39.0
 openai==1.52.0
 protobuf==5.28.2
 h5py==3.11.0
+deepface
+opencv-python
+streamlit-webrtc
+av
