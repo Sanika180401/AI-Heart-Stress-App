@@ -1,3 +1,4 @@
+# Core scientific stack
 numpy==1.26.4
 pandas==2.2.3
 matplotlib==3.9.2
@@ -5,13 +6,25 @@ joblib==1.4.2
 scikit-learn==1.5.2
 xgboost==2.1.2
 shap==0.46.0
+
+# Deep learning stack (FULLY COMPATIBLE)
 tensorflow==2.19.0
 keras==3.5.0
-streamlit==1.39.0
-openai==1.52.0
-protobuf==5.28.2
+tf-keras==2.19.0
 h5py==3.11.0
-deepface
-opencv-python
-streamlit-webrtc
-av
+
+# Streamlit app
+streamlit==1.39.0
+streamlit-webrtc==0.47.7
+
+# Face & emotion analysis
+deepface==0.0.93
+retina-face==0.0.14
+opencv-python==4.10.0.84
+av==12.0.0
+
+# GPT explanation
+openai==1.52.0
+
+# Critical compatibility fix
+protobuf==5.28.3
