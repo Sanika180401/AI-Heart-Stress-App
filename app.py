@@ -175,9 +175,10 @@ elif option == "Webcam Emotion Analysis":
 
             if len(self.buffer) > 0:
                 dom = max(self.buffer[-1], key=self.buffer[-1].get)
-                cv2.putText(img, f"Emotion: {dom}",(10,30),
+                cv2.putText(img, f"Emotion: {dom}", (10,30),
                             cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
             return img
+
 
     webrtc_ctx = webrtc_streamer(
         key="cam",
@@ -185,14 +186,60 @@ elif option == "Webcam Emotion Analysis":
         media_stream_constraints={"video": True, "audio": False}
     )
 
-    if st.button("Capture & Predict") and webrtc_ctx.video_transformer:
-        buffer = webrtc_ctx.video_transformer.buffer
-        if len(buffer)==0:
-            st.warning("No frames collected")
+    if st.button("Capture & Predict"):
+
+        trans = webrtc_ctx.video_transformer
+
+        if trans is None or len(trans.buffer) == 0:
+            st.error("No emotion data captured. Please face the camera for 10-15 seconds.")
         else:
-            emo_df = pd.DataFrame(buffer)
-            agg = {col: emo_df[col].mean() for col in emo_df.columns}
-            st.json(agg)
+            st.success(f"Frames captured: {len(trans.buffer)}")
+
+            emo_df = pd.DataFrame(trans.buffer)
+
+            # Aggregate emotion features
+            agg = {}
+            for col in emo_df.columns:
+                agg[f"{col}_mean"] = emo_df[col].mean()
+
+            # Default HRV values (can be replaced by sensors later)
+            hrv_features = {
+                "mean_hr": 75,
+                "sdnn": 50,
+                "rmssd": 30,
+                "pnn50": 20,
+                "lf": 800,
+                "hf": 600,
+                "sd1": 20,
+                "sd2": 40,
+                "temp": 36.5,
+                "eda": 2.0
+            }
+
+            final_features = list(hrv_features.values()) + list(agg.values())
+            input_array = np.array([final_features])
+
+            try:
+                input_scaled = pre["scaler"].transform(input_array)
+
+                preds = [rf.predict_proba(input_scaled)[:,1]]
+                if xgb:
+                    preds.append(xgb.predict_proba(input_scaled)[:,1])
+                if mlp:
+                    preds.append(mlp.predict(input_scaled).flatten())
+
+                avg_pred = float(np.mean(preds))
+
+                level = "Low Stress" if avg_pred < thr["low"] else \
+                        "Moderate Stress" if avg_pred < thr["high"] else \
+                        "High Stress"
+
+                st.metric("Stress Probability", f"{avg_pred*100:.2f}%")
+                st.success(f"Stress Level: {level}")
+                st.info(gpt_explain(level, avg_pred))
+
+            except Exception as e:
+                st.error(f"Prediction failed: {e}")
 
 # ===============================================================
 # SHAP FEATURE IMPORTANCE
