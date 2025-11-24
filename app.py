@@ -158,7 +158,7 @@ if option == "Manual Entry":
 elif option == "Webcam Emotion Analysis":
 
     st.subheader("Live Webcam Emotion Analysis")
-    st.info("Click START, look at camera for 10 seconds, then click Capture & Predict")
+    st.info("Click START, look at the camera for 10–15 seconds, then click Capture & Predict")
 
     class EmotionTransformer(VideoTransformerBase):
         def __init__(self):
@@ -170,22 +170,33 @@ elif option == "Webcam Emotion Analysis":
             try:
                 result = DeepFace.analyze(
                     img,
-                    actions=['emotion'],
+                    actions=["emotion"],
                     enforce_detection=False
                 )
 
-                emotion_dict = result[0]['emotion'] if isinstance(result, list) else result['emotion']
-                self.buffer.append(emotion_dict)
+                if isinstance(result, list):
+                    result = result[0]
 
-                dominant = max(emotion_dict, key=emotion_dict.get)
-                cv2.putText(img, f"Emotion: {dominant}", (10,30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                emo_dict = result.get("emotion")
+
+                if emo_dict:
+                    self.buffer.append(emo_dict)
+
+                    dominant = max(emo_dict, key=emo_dict.get)
+                    cv2.putText(
+                        img,
+                        f"Emotion: {dominant}",
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 255, 0),
+                        2
+                    )
 
             except Exception as e:
                 pass
 
             return img
-
 
     webrtc_ctx = webrtc_streamer(
         key="emotion_cam",
@@ -196,37 +207,36 @@ elif option == "Webcam Emotion Analysis":
 
     if st.button("Capture & Predict"):
 
-        if not webrtc_ctx.state.playing:
+        if not webrtc_ctx.video_transformer:
             st.error("Camera not started. Click START first.")
         else:
-            transformer = webrtc_ctx.video_transformer
+            buffer = webrtc_ctx.video_transformer.buffer
 
-            if transformer is None or len(transformer.buffer) < 10:
-                st.error("No emotion data captured. Please face the camera for 10-15 seconds.")
+            if len(buffer) < 10:
+                st.error("No emotion data captured. Please face the camera clearly for 10-15 seconds.")
             else:
-                st.success(f"Frames captured: {len(transformer.buffer)}")
+                st.success(f"Frames captured: {len(buffer)}")
 
-                emo_df = pd.DataFrame(transformer.buffer)
+                emo_df = pd.DataFrame(buffer)
 
-                emo_features = {f"{col}_mean": emo_df[col].mean() for col in emo_df.columns}
+                emotion_features = [emo_df[col].mean() for col in emo_df.columns]
 
-                hrv_features = {
-                    "mean_hr": 75,
-                    "sdnn": 50,
-                    "rmssd": 30,
-                    "pnn50": 20,
-                    "lf": 800,
-                    "hf": 600,
-                    "sd1": 20,
-                    "sd2": 40,
-                    "temp": 36.5,
-                    "eda": 2.0
-                }
+                hrv_features = [
+                    75,   # mean_hr
+                    50,   # sdnn
+                    30,   # rmssd
+                    20,   # pnn50
+                    800,  # lf
+                    600,  # hf
+                    20,   # sd1
+                    40,   # sd2
+                    36.5, # temp
+                    2.0   # eda
+                ]
 
-                final_features = list(hrv_features.values()) + list(emo_features.values())
-                input_array = np.array([final_features])
+                final_features = np.array([hrv_features + emotion_features])
 
-                prob, level = predict_stress(input_array)
+                prob, level = predict_stress(final_features)
 
                 st.metric("Stress Probability", f"{prob*100:.2f}%")
                 st.success(f"Stress Level: {level}")
