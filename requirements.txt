@@ -1,22 +1,25 @@
 numpy==1.26.4
-pandas==2.2.1
-matplotlib==3.8.4
-joblib==1.4.0
-scikit-learn==1.4.2
-xgboost==2.0.3
-shap==0.45.0
+pandas==2.2.3
+matplotlib==3.9.2
+joblib==1.4.2
+scikit-learn==1.5.2
+xgboost==2.1.2
+shap==0.46.0
 
-tensorflow==2.13.1
-keras==2.13.1
+tensorflow==2.19.0
+tf-keras
+keras==3.5.0
 
-streamlit==1.32.0
-blinker==1.7.0
-deepface==0.0.79
-retina-face==0.0.14
+streamlit==1.39.0
+streamlit-webrtc
+opencv-python
+deepface
+av
 
-opencv-python==4.9.0.80
-streamlit-webrtc==0.47.3
-av==11.0.0
+openai==1.52.0
 
-protobuf==4.25.3
-h5py==3.10.0
+protobuf==5.28.2
+google
+google-protobuf
+blinker
+h5py==3.11.0
