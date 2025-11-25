@@ -198,6 +198,7 @@ elif option == "Webcam Emotion Analysis":
 
             return img
 
+
     webrtc_ctx = webrtc_streamer(
         key="emotion_cam",
         video_transformer_factory=EmotionTransformer,
@@ -219,8 +220,10 @@ elif option == "Webcam Emotion Analysis":
 
                 emo_df = pd.DataFrame(buffer)
 
+                #  Aggregate emotion features
                 emotion_features = [emo_df[col].mean() for col in emo_df.columns]
 
+                #  Default physiological HRV values
                 hrv_features = [
                     75,   # mean_hr
                     50,   # sdnn
