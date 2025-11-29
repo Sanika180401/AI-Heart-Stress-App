@@ -155,95 +155,79 @@ if option == "Manual Entry":
 # ===============================================================
 # WEBCAM EMOTION ANALYSIS MODE (FIXED & WORKING)
 # ===============================================================
-elif option == "Webcam Emotion Analysis":
+import cv2
+import streamlit as st
+import numpy as np
+from deepface import DeepFace
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+# -----------------------------
+#  Webcam Handler
+# -----------------------------
+class VideoProcessor(VideoTransformerBase):
+    def __init__(self):
+        self.frame = None
 
-    st.subheader("Live Webcam Emotion Analysis")
-    st.info("Click START, look at the camera for 10–15 seconds, then click Capture & Predict")
-
-    class EmotionTransformer(VideoTransformerBase):
-        def __init__(self):
-            self.buffer = []
-
-        def transform(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-
-            try:
-                result = DeepFace.analyze(
-                    img,
-                    actions=["emotion"],
-                    enforce_detection=False
-                )
-
-                if isinstance(result, list):
-                    result = result[0]
-
-                emo_dict = result.get("emotion")
-
-                if emo_dict:
-                    self.buffer.append(emo_dict)
-
-                    dominant = max(emo_dict, key=emo_dict.get)
-                    cv2.putText(
-                        img,
-                        f"Emotion: {dominant}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (0, 255, 0),
-                        2
-                    )
-
-            except Exception as e:
-                pass
-
-            return img
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        self.frame = img
+        return img
 
 
-    webrtc_ctx = webrtc_streamer(
-        key="emotion_cam",
-        video_transformer_factory=EmotionTransformer,
+def capture_emotion():
+    st.info("Click START above, look at the camera for 10 seconds, then click CAPTURE.")
+
+    ctx = webrtc_streamer(
+        key="emotion",
+        video_processor_factory=VideoProcessor,
         media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
     )
 
-    if st.button("Capture & Predict"):
+    if ctx.video_processor:
+        if st.button("CAPTURE & ANALYZE"):
+            st.info("Capturing frames... please wait 3 seconds")
 
-        if not webrtc_ctx.video_transformer:
-            st.error("Camera not started. Click START first.")
-        else:
-            buffer = webrtc_ctx.video_transformer.buffer
+            frames = []
+            import time
+            t_end = time.time() + 3
 
-            if len(buffer) < 10:
-                st.error("No emotion data captured. Please face the camera clearly for 10-15 seconds.")
-            else:
-                st.success(f"Frames captured: {len(buffer)}")
+            # Collect frames for 3 seconds
+            while time.time() < t_end:
+                if ctx.video_processor.frame is not None:
+                    frames.append(ctx.video_processor.frame.copy())
 
-                emo_df = pd.DataFrame(buffer)
+            st.success(f"Captured {len(frames)} frames")
 
-                #  Aggregate emotion features
-                emotion_features = [emo_df[col].mean() for col in emo_df.columns]
+            # Perform emotion analysis on the middle frame
+            if len(frames) > 5:
+                frame = frames[len(frames) // 2]
+                result = DeepFace.analyze(frame, actions=['emotion'], enforce_detection=False)
 
-                #  Default physiological HRV values
-                hrv_features = [
-                    75,   # mean_hr
-                    50,   # sdnn
-                    30,   # rmssd
-                    20,   # pnn50
-                    800,  # lf
-                    600,  # hf
-                    20,   # sd1
-                    40,   # sd2
-                    36.5, # temp
-                    2.0   # eda
-                ]
+                emotion = result['dominant_emotion']
+                st.success(f"Detected Emotion: **{emotion}**")
 
-                final_features = np.array([hrv_features + emotion_features])
+                # convert emotion to stress score
+                stress_map = {
+                    "happy": 10,
+                    "neutral": 20,
+                    "surprise": 30,
+                    "sad": 70,
+                    "fear": 80,
+                    "angry": 90,
+                    "disgust": 85
+                }
 
-                prob, level = predict_stress(final_features)
+                stress = stress_map.get(emotion, 50)
 
-                st.metric("Stress Probability", f"{prob*100:.2f}%")
-                st.success(f"Stress Level: {level}")
-                st.info(gpt_explain(level, prob))
+                st.info(f"Estimated Stress Level: **{stress}/100**")
+
+                return emotion, stress
+
+    return None, None
+
+emotion, stress = capture_emotion()
+if emotion:
+    st.write("Emotion:", emotion)
+    st.write("Stress Score:", stress)
 
 # ===============================================================
 # SHAP FEATURE IMPORTANCE
