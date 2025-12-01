@@ -12,3 +12,4 @@ shap==0.45.1
 protobuf==5.28.3
 pillow==10.4.0
 h5py==3.11.0
+openai==1.52.0
