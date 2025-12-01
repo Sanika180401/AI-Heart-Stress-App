@@ -1,27 +1,14 @@
-# Core
+streamlit==1.40.2
+opencv-python==4.10.0.84
 numpy==1.26.4
 pandas==2.2.3
-matplotlib==3.9.2
+python-dateutil==2.9.0.post0
+mediapipe==0.10.14
+tensorflow==2.19.0
 scikit-learn==1.5.2
 joblib==1.4.2
-
-# Models
-xgboost==2.1.2
-tensorflow==2.19.0
-h5py==3.11.0
-
-# App + camera + image processing
-streamlit==1.39.0
-opencv-python==4.9.0.74
-deepface==0.0.86
-streamlit-webrtc==0.54.0
-av==10.0.0
-
-# Utilities (Streamlit runtime deps we saw missing earlier)
-click==8.1.7
-cachetools==5.3.0
-packaging==23.1
-protobuf==3.20.3
-
-# Optional (OpenAI GPT explanations; set OPENAI_API_KEY in streamlit secrets if used)
-openai==1.52.0
+matplotlib==3.9.2
+shap==0.45.1
+protobuf==5.28.3
+altair==5.3.0
+pillow==10.4.0
