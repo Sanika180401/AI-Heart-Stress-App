@@ -469,27 +469,52 @@ if "history" not in st.session_state:
 
 def login_widget():
     st.sidebar.markdown("## Account")
+
+    users = read_users()
+
+    # If user already logged in
     if st.session_state.user:
-        st.sidebar.write(f"Signed in: **{st.session_state.user}**")
-        if st.sidebar.button("Sign out"):
+        st.sidebar.success(f"Logged in as: {st.session_state.user}")
+
+        if st.sidebar.button("Logout"):
             st.session_state.user = None
             st.experimental_rerun()
-    else:
-        username = st.sidebar.text_input("Username", value="")
-        password = st.sidebar.text_input("Password", value="", type="password")
-        if st.sidebar.button("Sign in"):
-            users = read_users()
-            found = False
-            for u in users.get("users", []):
-                if u["username"] == username and u["password"] == password:
-                    st.session_state.user = username
-                    found = True
-                    break
-            if not found:
-                st.sidebar.error("Invalid credentials (demo: demo/demo).")
-        st.sidebar.markdown("New user? Use `demo/demo` or edit users.json.")
+        return
 
-login_widget()
+    # LOGIN FORM
+    with st.sidebar.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Sign in")
+
+    if submit:
+        found = False
+        for u in users["users"]:
+            if u["username"] == username and u["password"] == password:
+                st.session_state.user = username
+                st.experimental_rerun()
+                found = True
+                break
+        if not found:
+            st.sidebar.error("Invalid username or password")
+
+    # REGISTER
+    if st.sidebar.button("Create New Account"):
+        st.session_state["register_mode"] = True
+
+    if st.session_state.get("register_mode"):
+        st.sidebar.markdown("### Register New Account")
+        new_user = st.sidebar.text_input("New Username")
+        new_pass = st.sidebar.text_input("New Password", type="password")
+
+        if st.sidebar.button("Register"):
+            if any(u["username"] == new_user for u in users["users"]):
+                st.sidebar.error("Username already exists.")
+            else:
+                users["users"].append({"username": new_user, "password": new_pass})
+                save_users(users)
+                st.sidebar.success("Account created successfully!")
+                st.session_state["register_mode"] = False
 
 # ---------------------------
 # UI layout - header
@@ -516,9 +541,7 @@ with st.sidebar:
     rec_seconds = st.slider("Webcam record sec", min_value=4, max_value=16, value=8)
     show_shap = st.checkbox("Show SHAP explainability", value=True)
     lang = st.selectbox("Language", ["English","Hindi","Marathi"])
-    st.markdown("---")
-    st.markdown("**Models loaded:**")
-    st.markdown(f"mlp: {'yes' if models_loaded['mlp'] else 'no'}, rf: {'yes' if models_loaded['rf'] else 'no'}, xgb: {'yes' if models_loaded['xgb'] else 'no'}, stacker: {'yes' if models_loaded['stacker'] else 'no'}")
+    st.markdown("---") 
 
 # ---------------------------
 # Main input card
@@ -631,11 +654,70 @@ with left_col:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with right_col:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader("Live Dashboard")
-    gauge_ph = st.empty()
-    metrics_ph = st.empty()
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("""
+        <div class='card' style='padding:20px'>
+            <h3 style='color:#c41b23; margin-bottom:10px;'>Live Dashboard</h3>
+        </div>
+    """, unsafe_allow_html=True)
+
+    dash_col1, dash_col2, dash_col3 = st.columns(3)
+
+    # --------- HR Circular Gauge (Plotly) ----------
+    with dash_col1:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        if go is not None:
+            fig_hr = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=75,
+                gauge={
+                    "axis":{"range":[40,180]},
+                    "bar":{"color":"#ff4d6d"},
+                    "bgcolor":"white",
+                    "steps":[{"range":[40,180], "color":"#ffe6ea"}],
+                },
+                title={"text":"Heart Rate (bpm)"}
+            ))
+            fig_hr.update_layout(height=240, margin=dict(t=10,b=0,l=0,r=0))
+            st.plotly_chart(fig_hr, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # --------- Stress Donut Chart -----------
+    with dash_col2:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        if go is not None:
+            stress_fig = go.Figure(data=[go.Pie(
+                values=[75, 25],
+                labels=["Stress", ""],
+                hole=.7,
+                marker_colors=["#ff7a59", "#f5f5f5"],
+                textinfo='none'
+            )])
+            stress_fig.update_layout(
+                height=240,
+                showlegend=False,
+                annotations=[dict(text="Stress<br>75%", x=0.5, y=0.5, font_size=18, showarrow=False)]
+            )
+            st.plotly_chart(stress_fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # --------- Risk Semi-circle ---------
+    with dash_col3:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        if go is not None:
+            risk_fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=25,
+                gauge={
+                    "axis":{"range":[0,100]},
+                    "bar":{"color":"#f97316"},
+                    "bgcolor":"white",
+                    "steps":[{"range":[0,100], "color":"#fee9d0"}],
+                },
+                title={"text":"Heart Attack Risk"}
+            ))
+            risk_fig.update_layout(height=240, margin=dict(t=10,b=0,l=0,r=0))
+            st.plotly_chart(risk_fig, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------------
 # After prediction: results
