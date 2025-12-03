@@ -51,31 +51,6 @@ HISTORY_DIR.mkdir(exist_ok=True)
 FEATURE_ORDER = ['mean_hr','rmssd','pnn50','sd1','sd2','lf_hf','rr_mean','rr_std']
 
 # ---------------------------
-# Utility functions
-# ---------------------------
-def safe_load_joblib(path):
-    try:
-        return load(path)
-    except Exception as e:
-        # don't crash on model load issues; show minimal debug
-        try:
-            st.debug(f"Model load failed {path}: {e}")
-        except Exception:
-            pass
-        return None
-
-def ensure_users_file():
-    if not USERS_FILE.exists():
-        USERS_FILE.write_text(json.dumps({"users":[{"username":"demo","password":"demo"}]}, indent=2))
-
-def read_users():
-    ensure_users_file()
-    return json.loads(USERS_FILE.read_text())
-
-def save_users(data):
-    USERS_FILE.write_text(json.dumps(data, indent=2))
-
-# ---------------------------
 # Load models (if present)
 # ---------------------------
 scaler = safe_load_joblib(MODELS_DIR/"scaler.pkl")
@@ -459,67 +434,6 @@ def generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang="English"):
     text_lines.append("")
     text_lines.append("When to seek care: " + tpl["seek"])
     return "\n".join(text_lines)
-
-# ---------------------------
-# Simple multi-user session (local)
-# ---------------------------
-ensure_users_file()
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "history" not in st.session_state:
-    st.session_state.history = {}  # keyed by username: list of dicts
-
-def login_widget():
-    st.sidebar.markdown("## Account")
-
-    users = read_users()
-
-    # If user already logged in
-    if st.session_state.user:
-        st.sidebar.success(f"Logged in as: {st.session_state.user}")
-
-        if st.sidebar.button("Logout"):
-            st.session_state.user = None
-            st.experimental_rerun()
-        return
-
-    # LOGIN FORM
-    with st.sidebar.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Sign in")
-
-    if submit:
-        found = False
-        for u in users["users"]:
-            if u["username"] == username and u["password"] == password:
-                st.session_state.user = username
-                st.experimental_rerun()
-                found = True
-                break
-        if not found:
-            st.sidebar.error("Invalid username or password")
-
-    # REGISTER
-    if st.sidebar.button("Create New Account"):
-        st.session_state["register_mode"] = True
-
-    if st.session_state.get("register_mode"):
-        st.sidebar.markdown("### Register New Account")
-        new_user = st.sidebar.text_input("New Username")
-        new_pass = st.sidebar.text_input("New Password", type="password")
-
-        if st.sidebar.button("Register"):
-            if any(u["username"] == new_user for u in users["users"]):
-                st.sidebar.error("Username already exists.")
-            else:
-                users["users"].append({"username": new_user, "password": new_pass})
-                save_users(users)
-                st.sidebar.success("Account created successfully!")
-                st.session_state["register_mode"] = False
-
-# Ensure login widget shows on sidebar
-login_widget()
 
 # ---------------------------
 # UI layout - header
