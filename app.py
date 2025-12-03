@@ -1,225 +1,89 @@
+# app.py — Final premium app with level-specific AI explanations + multi-language
+# Requirements: streamlit, numpy, pandas, opencv-python-headless (or opencv-python), joblib, scipy, scikit-learn, plotly (optional), shap (optional)
+# Place optional logo at assets/logo.png. Place trained models in models/ if available.
+
 import os
-import cv2
 import time
-import json
+import tempfile
 import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image
 from joblib import load
-from scipy.signal import find_peaks, butter, filtfilt, welch, detrend
+from PIL import Image
+import cv2
 
 # Optional libs
 try:
-    import plotly.graph_objects as go
-except:
-    go = None
-
-try:
     import shap
-except:
+except Exception:
     shap = None
 
-# Try to import google-genai - if absent, we'll fall back safely
 try:
-    from google import genai
+    import plotly.graph_objects as go
 except Exception:
-    genai = None
+    go = None
+
+from scipy.signal import find_peaks, butter, filtfilt, welch, detrend
 
 # ---------------------------
-# Streamlit layout + theme
+# Small helpers & config
 # ---------------------------
 st.set_page_config(page_title="AI Heart Rate & Stress Analyzer", layout="wide")
 
-st.markdown(
-    """
-<style>
-.stApp { background: #f7f9fb; color:#0b1721; }
-.logo-box { width:70px; height:70px; border-radius:15px;
-  background:linear-gradient(135deg,#ff4d6d,#ff7a59);
-  display:flex; align-items:center; justify-content:center;
-  color:white; font-size:28px; font-weight:700; box-shadow:0 6px 18px rgba(0,0,0,0.12); }
-.card { background:white; border-radius:14px; padding:18px; margin-bottom:14px;
-  box-shadow:0 6px 20px rgba(15,23,42,0.07); border:1px solid rgba(0,0,0,0.04); }
-.stButton > button { background:linear-gradient(90deg,#ff4d6d,#ff7a59); color:white; border:none; border-radius:10px; padding:10px 20px; font-weight:600; }
-.preview-img { width:300px; height:180px; object-fit:cover; border-radius:10px; border:1px solid #ddd; }
-.stress-outer { background:#eef2f7; padding:5px; border-radius:12px; }
-.stress-inner { height:26px; border-radius:10px; background:linear-gradient(90deg,#ff7a59,#ff4d6d); color:white; font-weight:700; text-align:right; padding-right:8px; transition:width 1.0s ease; }
-.muted { color:#64748b; font-size:13px; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# ---------------------------
-# Paths and models
-# ---------------------------
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(ROOT, "models")
 ASSETS_DIR = os.path.join(ROOT, "assets")
 LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
 
-def load_model_safe(name):
-    p = os.path.join(MODELS_DIR, name)
+FEATURE_ORDER = ['mean_hr','rmssd','pnn50','sd1','sd2','lf_hf','rr_mean','rr_std']
+
+def load_model_safe(filename):
+    p = os.path.join(MODELS_DIR, filename)
     if os.path.exists(p):
         try:
             return load(p)
-        except Exception:
+        except Exception as e:
+            st.warning(f"Failed to load {filename}: {e}")
             return None
     return None
 
+# load models (optional)
 scaler = load_model_safe("scaler.pkl")
-stacker = load_model_safe("stacker.pkl")
 mlp = load_model_safe("mlp.pkl")
 rf = load_model_safe("rf.pkl")
 xgb = load_model_safe("xgb.pkl")
+stacker = load_model_safe("stacker.pkl")
 
 # ---------------------------
-# Gemini / AI helper (safe)
+# Styling (light premium)
 # ---------------------------
-
-def get_gemini_client_from_file():
-    """
-    Try to configure google-genai (if installed) using gemini_key.txt.
-    Return a client object or None.
-    """
-    keyfile = os.path.join(ROOT, "gemini_key.txt")
-    if genai is None or not os.path.exists(keyfile):
-        return None
-    try:
-        key = open(keyfile, "r", encoding="utf-8").read().strip()
-        # some genai versions use genai.configure(api_key=...) others different; try configure
-        try:
-            genai.configure(api_key=key)
-            # keep genai module as client
-            return genai
-        except Exception:
-            # if module provides Client class, attempt to instantiate
-            try:
-                client = genai.Client(api_key=key)
-                return client
-            except Exception:
-                return None
-    except Exception:
-        return None
-
-gemini = get_gemini_client_from_file()
-
-# A robust fallback local explainer if Gemini fails or model unsupported
-def local_explain(feats, prob, risk_pct, risk_cat, lang="English"):
-    # Create a short one-liner and three recommendations heuristically
-    hr = int(round(feats.get("mean_hr", 0)))
-    stress_cat = "Low" if prob < 0.35 else ("Moderate" if prob < 0.65 else "High")
-    if lang == "Hindi":
-        one = f"अनुमानित HR ≈ {hr} bpm, तनाव: {stress_cat},  हार्ट-रिस्क ~ {int(risk_pct)}%."
-        rec1 = "गहरी श्वास लें (2 मिनट)।"
-        rec2 = "आज हल्की फिजिकल एक्टिविटी करें।"
-        rec3 = "लंबे समय में नींद व आहार सुधारें।"
-        care = "यदि साँस फूलना या वेज दर्द हो तो डॉक्टर से मिलें।"
-    elif lang == "Marathi":
-        one = f"अनुमानित HR ≈ {hr} bpm, ताण: {stress_cat}, हार्ट-रिस्क ~ {int(risk_pct)}%."
-        rec1 = "सखोल श्वास घ्या (2 मिनिटे)."
-        rec2 = "आज हलकी व्यायाम करा."
-        rec3 = "दीर्घकालीन: झोप व आहार सांभाळा."
-        care = "श्वास फु सर्व किंवा छातीत वेदना तर वैद्याकरांची मदत घ्या."
-    else:
-        one = f"Predicted HR ≈ {hr} bpm, Stress: {stress_cat}, Heart-risk ≈ {int(risk_pct)}%."
-        rec1 = "Do slow breathing for 2 minutes (4s in, 4s out)."
-        rec2 = "Take a short walk and hydrate today."
-        rec3 = "Improve sleep and reduce caffeine long-term."
-        care = "Seek medical help for chest pain, fainting, or shortness of breath."
-
-    out = f"{one}\n\nRecommendations:\n1. {rec1}\n2. {rec2}\n3. {rec3}\n\nWhen to seek care: {care}"
-    return out
-
-def safe_gemini_generate(feats, prob, risk_pct, risk_cat, lang="English"):
-    """
-    Try to call Gemini safely. If any error / unsupported model, return None so we fallback locally.
-    We DO NOT raise exceptions to Streamlit; we swallow and return fallback text.
-    """
-    if gemini is None:
-        return None  # caller will fallback
-
-    prompt_lang = {"English":"English","Hindi":"Hindi","Marathi":"Marathi"}.get(lang, "English")
-    prompt = (
-        f"You are a concise medical assistant. Reply in {prompt_lang}.\n\n"
-        f"HRV features: {feats}\nStress probability: {prob:.2f}\n"
-        f"Heart attack estimate: {risk_pct:.0f}% ({risk_cat})\n\n"
-        "Provide: 1) One-sentence explanation. 2) Three short recommendations (immediate, today, long-term). "
-        "3) One-sentence when to seek medical care."
-    )
-
-    # Try a few model names (some regions / SDKs use different names); if any works, return text.
-    candidate_models = ["gemini-1.5-realtime", "gemini-1.5", "gemini-1.5-flash", "gemini-1.0"]
-    # If module is configured like genai (with generate_text or models.generate_content), attempt robustly
-    try:
-        # preferred approach: if module has models.generate_content use it (newer SDK)
-        if hasattr(gemini, "models") and hasattr(gemini.models, "generate_content"):
-            for m in candidate_models:
-                try:
-                    resp = gemini.models.generate_content(model=m, prompt=prompt)  # some SDK variants accept 'prompt'
-                    # resp may be object or dict-like; try to extract .text or .output[0]
-                    if hasattr(resp, "content"):
-                        txt = getattr(resp, "content")
-                        return txt
-                    # check common shapes
-                    if isinstance(resp, dict):
-                        # new API may return {'candidates':[{'content':'...'}]}
-                        if "candidates" in resp and len(resp["candidates"])>0 and "content" in resp["candidates"][0]:
-                            return resp["candidates"][0]["content"]
-                        if "output" in resp:
-                            try:
-                                return json.dumps(resp["output"])[:2000]
-                            except:
-                                return str(resp)
-                    # fallback
-                    try:
-                        return str(resp)
-                    except:
-                        pass
-                except Exception:
-                    continue
-
-        # older SDK: gemini.generate_text or genai.generate_text style
-        if hasattr(gemini, "generate_text"):
-            for m in candidate_models:
-                try:
-                    resp = gemini.generate_text(model=m, prompt=prompt)
-                    # try common accessors
-                    if hasattr(resp, "text"):
-                        return resp.text
-                    if isinstance(resp, dict) and "candidates" in resp and len(resp["candidates"])>0:
-                        return resp["candidates"][0].get("content", str(resp))
-                    return str(resp)
-                except Exception:
-                    continue
-
-        # some SDKs expose Client with .models or .generate; try generic
-        # If nothing worked, return None to fallback.
-        return None
-    except Exception:
-        return None
-
-def generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang="English"):
-    # Try Gemini first (safe); if fails, use local fallback.
-    gem = safe_gemini_generate(feats, prob, risk_pct, risk_cat, lang)
-    if gem is not None:
-        return gem
-    # fallback local explanation (no external call, guaranteed)
-    return local_explain(feats, prob, risk_pct, risk_cat, lang)
+st.markdown("""
+<style>
+.stApp { background: #f7fafc; color: #0b1721; }
+.logo-box { width:72px; height:72px; border-radius:12px; background:linear-gradient(135deg,#ff4d6d,#ff7a59); display:flex; align-items:center; justify-content:center; color:white; font-weight:700; font-size:28px; box-shadow: 0 6px 18px rgba(0,0,0,0.06); }
+.card { background: white; border-radius:12px; padding:18px; box-shadow: 0 6px 20px rgba(15,23,42,0.04); border:1px solid rgba(2,6,23,0.03); }
+.preview-img { width:360px; height:200px; object-fit:cover; border-radius:10px; }
+.stButton > button { background: linear-gradient(90deg,#ff4d6d,#ff7a59); color:white; border-radius:10px; padding:8px 14px; font-weight:600; border:none; }
+.stButton > button:hover { transform: translateY(-2px); }
+.stSlider > div { color:#c41b23; }
+.stress-outer { width:100%; background:#eef2f7; border-radius:10px; padding:6px; }
+.stress-inner { height:26px; border-radius:8px; width:0%; background:linear-gradient(90deg,#ff7a59,#ff4d6d); color:white; display:flex; align-items:center; justify-content:flex-end; padding-right:8px; font-weight:700; transition: width 1s ease; }
+.muted { color:#64748b; font-size:13px; }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------
-# Signal processing helpers
+# rPPG extraction (simplified CHROM-ish)
 # ---------------------------
 def bandpass(sig, fs, low=0.7, high=4.0, order=3):
-    nyq = 0.5*fs
-    b,a = butter(order, [low/nyq, high/nyq], btype='band')
-    return filtfilt(b,a,sig)
+    nyq = 0.5 * fs
+    b, a = butter(order, [low/nyq, high/nyq], btype='band')
+    return filtfilt(b, a, sig)
 
 def extract_mean_green_signal_from_video_file(video_path, max_seconds=10, resize_width=360):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        return None, None
+        raise RuntimeError("Cannot open video file.")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or fps*max_seconds)
     max_frames = min(total, int(fps*max_seconds))
@@ -227,7 +91,8 @@ def extract_mean_green_signal_from_video_file(video_path, max_seconds=10, resize
     frames = 0
     while frames < max_frames:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
         h,w = frame.shape[:2]
         if w > resize_width:
             scale = resize_width / w
@@ -274,8 +139,8 @@ def compute_hrv_from_rr(rr_ms, hr_series=None):
     # lf/hf approx
     lf_hf = 0.0
     try:
-        fs_interp=4.0
-        times=np.cumsum(rr_ms)/1000.0
+        fs_interp = 4.0
+        times = np.cumsum(rr_ms)/1000.0
         if len(times) >= 4:
             t_interp = np.arange(0, times[-1], 1.0/fs_interp)
             inst_hr = 60000.0/rr_ms
@@ -291,12 +156,13 @@ def compute_hrv_from_rr(rr_ms, hr_series=None):
         lf_hf = 0.0
     return {"mean_hr":mean_hr,"rmssd":rmssd,"pnn50":pnn50,"sd1":sd1,"sd2":sd2,"lf_hf":lf_hf,"rr_mean":rr_mean,"rr_std":rr_std}
 
-FEATURE_ORDER = ['mean_hr','rmssd','pnn50','sd1','sd2','lf_hf','rr_mean','rr_std']
-
 def vectorize_features(feats):
-    return np.array([feats.get(k, np.nan) for k in FEATURE_ORDER]).reshape(1, -1)
+    # return 2D row
+    return np.array([float(feats.get(k, 0.0) if feats.get(k) is not None else 0.0) for k in FEATURE_ORDER]).reshape(1,-1)
 
-# Ensemble predict
+# ---------------------------
+# Ensemble prediction & heuristics
+# ---------------------------
 def predict_ensemble(feats):
     X = vectorize_features(feats)
     try:
@@ -316,7 +182,12 @@ def predict_ensemble(feats):
     if rf is not None: probs.append(safe_prob(rf))
     if xgb is not None: probs.append(safe_prob(xgb))
     if len(probs)==0:
-        return 0.5, probs
+        # fallback heuristic using mean_hr & rmssd:
+        hr = feats.get("mean_hr", 75)
+        rmssd = feats.get("rmssd", 30)
+        # simple mapping: high HR + low RMSSD -> high stress
+        score = np.clip((hr-60)/60 * 0.6 + (40 - min(rmssd,40))/40 * 0.4, 0, 1)
+        return float(score), []
     meta = np.array(probs).reshape(1,-1)
     try:
         final = float(stacker.predict_proba(meta)[:,1][0]) if stacker is not None else float(np.mean(probs))
@@ -324,15 +195,19 @@ def predict_ensemble(feats):
         final = float(np.mean(probs))
     return final, probs
 
-def categorize_stress(p, lang="English"):
-    if p < 0.35: return {"English":"Low","Hindi":"कम","Marathi":"कमी"}[lang]
-    if p < 0.65: return {"English":"Moderate","Hindi":"मध्यम","Marathi":"मध्यम"}[lang]
-    return {"English":"High","Hindi":"उच्च","Marathi":"जास्त"}[lang]
+def categorize_stress(p):
+    if p < 0.35: return "Low"
+    if p < 0.65: return "Moderate"
+    return "High"
 
-def categorize_hr(hr, lang="English"):
-    if hr < 60: return {"English":"Low","Hindi":"कम","Marathi":"कमी"}[lang]
-    if hr <= 100: return {"English":"Normal","Hindi":"सामान्य","Marathi":"सामान्य"}[lang]
-    return {"English":"High","Hindi":"उच्च","Marathi":"उच्च"}[lang]
+def categorize_hr(hr):
+    try:
+        hr = float(hr)
+    except Exception:
+        hr = 0.0
+    if hr < 60: return "Low"
+    if hr <= 100: return "Normal"
+    return "High"
 
 def heart_attack_risk_heuristic(prob, mean_hr):
     hr_score = max(0.0, (mean_hr - 60.0) / 60.0)
@@ -344,7 +219,131 @@ def heart_attack_risk_heuristic(prob, mean_hr):
     return risk_pct, cat
 
 # ---------------------------
-# UI header / sidebar
+# AI-style explanation generator (local) — multi-language and level-specific
+# ---------------------------
+def generate_explanation_text(feats, stress_label, hr_label, risk_pct, risk_cat, lang="English"):
+    # Templates per stress level and language
+    templates = {
+        "English": {
+            "Low": {
+                "one": "You're showing low stress and a healthy heart rate. Keep up good habits!",
+                "rec": [
+                    "Immediate: Take a short stretch or 30-second calm breath.",
+                    "Today: Keep hydrated and take short breaks from screens.",
+                    "Long-term: Maintain regular exercise and sleep schedule."
+                ],
+                "when": "Seek care if you notice chest pain, dizziness, or breathlessness."
+            },
+            "Moderate": {
+                "one": "Your stress markers are moderate and heart rate is slightly elevated — minor changes can help.",
+                "rec": [
+                    "Immediate: Try 2 minutes of paced breathing (4s in, 4s out).",
+                    "Today: Reduce caffeine, go for a 10-minute walk.",
+                    "Long-term: Practice relaxation (yoga, mindfulness) regularly."
+                ],
+                "when": "Consult a doctor if symptoms persist or worsen."
+            },
+            "High": {
+                "one": "Stress indicators are high and heart-rate is concerning — take action now.",
+                "rec": [
+                    "Immediate: Stop activity, sit/lie down, practice slow breathing for 5 minutes.",
+                    "Today: Avoid stimulants, rest, and contact a healthcare professional if needed.",
+                    "Long-term: Seek structured stress management and medical advice."
+                ],
+                "when": "If you experience chest pain, fainting, or severe breathlessness, seek emergency care."
+            }
+        },
+        "Hindi": {
+            "Low": {
+                "one": "आपका तनाव कम है और हृदय गति स्वस्थ है। अच्छा बनाए रखें!",
+                "rec": [
+                    "तुरंत: थोड़ी स्ट्रेचिंग या 30 सेकंड की गहरी साँस लें।",
+                    "आज: पानी भरपूर पिएँ और स्क्रीन से ब्रेक लें।",
+                    "दीर्घकालिक: नियमित व्यायाम और अच्छी नींद बनाए रखें।"
+                ],
+                "when": "यदि सीने में दर्द, चक्कर या सांस लेने में कठिनाई हो तो डॉक्टर से संपर्क करें।"
+            },
+            "Moderate": {
+                "one": "तनाव मध्यम है और हृदय गति थोड़ी ऊँची है — कुछ बदलाव मदद करेंगे।",
+                "rec": [
+                    "तुरंत: 2 मिनट की नियंत्रित श्वास (4 सेकंड अंदर, 4 बाहर)।",
+                    "आज: कैफीन कम करें, 10 मिनट की सैर करें।",
+                    "दीर्घकालिक: नियमित माइंडफुलनेस या योग करें।"
+                ],
+                "when": "यदि लक्षण बने रहें या बढ़ें तो डॉक्टर से सलाह लें।"
+            },
+            "High": {
+                "one": "तनाव के संकेत उच्च हैं — तुरंत सावधानी बरतें।",
+                "rec": [
+                    "तुरंत: शांति से बैठकर 5 मिनट धीमी साँस लें।",
+                    "आज: उत्तेजक चीजें टालें और आराम करें; आवश्यकता हो तो हेल्थकेयर से संपर्क करें।",
+                    "दीर्घकालिक: स्ट्रेस मैनेजमेंट और मेडिकल सलाह लें।"
+                ],
+                "when": "यदि सीने में तेज दर्द या बेहोशी हो, तो आपातकालीन सहायता लें।"
+            }
+        },
+        "Marathi": {
+            "Low": {
+                "one": "तणाव कमी आहे आणि हृदय गती सामान्य आहे. हे असेच ठेवा!",
+                "rec": [
+                    "तत्काळ: थोडी स्ट्रेचिंग किंवा 30 सेकंद श्वास घ्या.",
+                    "आज: पुरेसं पाणी प्या आणि छोट्या ब्रेक घ्या.",
+                    "दीर्घकालीन: नियमित व्यायाम व योग्य झोप ठेवा."
+                ],
+                "when": "छातीमध्ये वेदना, चक्कर किंवा श्वसनात त्रास असल्यास डॉक्टरांकडे जा."
+            },
+            "Moderate": {
+                "one": "तणाव मध्यम आहे आणि हृदय गती थोडी वाढलेली आहे — काही बदल उपयोगी ठरतील.",
+                "rec": [
+                    "तत्काळ: 2 मिनिटांची नियंत्रित श्वास (4s इन, 4s आउट).",
+                    "आज: कॅफीन कमी करा, 10 मिनिटांची चाल करा.",
+                    "दीर्घकालीन: ध्यान / योगाचा समावेश करा."
+                ],
+                "when": "लक्षणे कायम राहिली तर डॉक्टरांचा सल्ला घ्या."
+            },
+            "High": {
+                "one": "तणावाचे निदर्शने जास्त आहेत — ताबडतोब खबरदारी घ्या.",
+                "rec": [
+                    "तत्काळ: आराम करा आणि 5 मिनिटे हळूहळू श्वास घ्या.",
+                    "आज: उत्तेजक पदार्थ टाळा आणि विश्रांती घ्या; गरज भासल्यास डॉक्टर संपर्क करा.",
+                    "दीर्घकालीन: तणाव व्यवस्थापन व वैद्यकीय सल्ला घ्या."
+                ],
+                "when": "छातीतील वेदना, बेहोशी किंवा श्वासात गंभीर त्रास असल्यास आपत्कालीन मदत घ्या."
+            }
+        }
+    }
+
+    # Select template
+    lang = lang if lang in templates else "English"
+    tset = templates[lang].get(stress_label, templates["English"]["Moderate"])
+    one = tset["one"]
+    recs = tset["rec"]
+    when = tset["when"]
+
+    # Variation by HR label: small suffix
+    hr_suffix = {
+        "Low": {"English":" Your heart rate is a bit low; check for fatigue or medications." ,
+                "Hindi":" आपकी हृदय गति थोड़ी कम है; थकान या दवाइयों को देखें।",
+                "Marathi":"हृदय गती थोडी कमी आहे; थकवा किंवा औषधे तपासा."},
+        "Normal": {"English":" Heart rate is in normal range.","Hindi":" हृदय गति सामान्य है।","Marathi":"हृदय गती सामान्य श्रेणीत आहे."},
+        "High": {"English":" Heart rate is high — avoid exertion and monitor closely.","Hindi":" हृदय गति ऊँची है — व्यायाम से बचें और नजर रखें।","Marathi":"हृदय गती जास्त आहे — कष्ट टाळा आणि लक्ष ठेवा."}
+    }
+    suffix = hr_suffix.get(hr_label, hr_suffix["Normal"]).get(lang, "")
+
+    # Build explanation text
+    lines = []
+    lines.append(one + " " + suffix)
+    lines.append("")
+    lines.append({"English":"Recommendations:","Hindi":"सिफारिशें:","Marathi":"शिफारसी:"}[lang])
+    for r in recs:
+        lines.append(f"- {r}")
+    lines.append("")
+    lines.append({"English":"When to seek care:","Hindi":"कब चिकित्सक से मिलें:","Marathi":"केव्हा डॉक्टरांचा सल्ला घ्यावा:"}[lang])
+    lines.append(when)
+    return "\n".join(lines)
+
+# ---------------------------
+# UI layout
 # ---------------------------
 col_logo, col_title = st.columns([0.8, 6])
 with col_logo:
@@ -353,32 +352,35 @@ with col_logo:
     else:
         st.markdown('<div class="logo-box">AH</div>', unsafe_allow_html=True)
 with col_title:
-    st.markdown("<h1>AI Heart Rate & Stress Analyzer</h1>", unsafe_allow_html=True)
-    st.markdown('<div class="muted">Heart Rate and Stress Monitoring System for Early Heart Attack Risk Prediction</div>', unsafe_allow_html=True)
+    st.markdown("<h1 style='color:#c41b23; margin:0'>AI Heart Rate & Stress Analyzer</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>Heart Rate and Stress Monitoring System for Early Heart Attack Risk Prediction</div>", unsafe_allow_html=True)
+
+st.write("")
 
 with st.sidebar:
     st.header("Input")
     method = st.radio("Choose method", ["Manual Entry","Upload Video","Upload Image","Webcam Image","Webcam Video"])
     max_seconds = st.slider("Max video seconds", 6, 20, 10)
-    rec_seconds = st.slider("Webcam recording seconds", 4, 12, 8)
-    show_shap = st.checkbox("Show SHAP Explainability", True)
-    lang = st.selectbox("Language", ["English","Hindi","Marathi"])
+    rec_seconds = st.slider("Webcam record sec", 4, 12, 8)
+    show_shap = st.checkbox("Show SHAP explainability", True)
+    language = st.selectbox("Language", ["English","Hindi","Marathi"])
     st.markdown("---")
-    st.markdown(f"Gemini AI: {'Available' if gemini is not None else 'Missing'}")
+    st.markdown("<div class='muted'>Models loaded:</div>", unsafe_allow_html=True)
+    st.write(f"mlp: {'yes' if mlp is not None else 'no'}, rf: {'yes' if rf is not None else 'no'}, xgb: {'yes' if xgb is not None else 'no'}, stacker: {'yes' if stacker is not None else 'no'}")
 
-# Main layout placeholders
-left, right = st.columns([1, 1.4])
-features = None
-
+# main card inputs
+left, right = st.columns([1,1.4])
 with left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Input")
+    features = None
+
     if method == "Manual Entry":
         vals = {}
         cols = st.columns(2)
         for i, f in enumerate(FEATURE_ORDER):
             with cols[i%2]:
-                default = 75.0 if f=='mean_hr' else 1.0
+                default = 75.0 if f=='mean_hr' else 20.0
                 vals[f] = st.number_input(f, value=float(default))
         if st.button("Predict"):
             features = vals
@@ -386,60 +388,65 @@ with left:
     elif method == "Upload Image":
         uploaded = st.file_uploader("Image", type=["jpg","jpeg","png"])
         if uploaded:
-            st.image(uploaded, width=300, caption="Preview")
+            st.image(uploaded, width=360, caption="Preview")
             if st.button("Predict"):
                 img = Image.open(uploaded).convert("RGB")
                 arr = np.array(img)
                 mean_g = float(np.mean(arr[:,:,1]))
-                features = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":np.nan, "sd1":18.0, "sd2":36.0, "lf_hf":np.nan, "rr_mean":np.nan, "rr_std":np.nan}
+                # surrogate features for single image
+                feats = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":5.0, "sd1":12.0, "sd2":24.0, "lf_hf":0.8, "rr_mean":800.0, "rr_std":40.0}
+                features = feats
 
     elif method == "Upload Video":
         vid = st.file_uploader("Video (mp4,mov,avi)", type=["mp4","mov","avi"])
         if vid:
             st.video(vid, start_time=0)
             if st.button("Predict"):
-                tmp = "tmp_uploaded_video.mp4"
-                open(tmp,"wb").write(vid.read())
-                sig, fps = extract_mean_green_signal_from_video_file(tmp, max_seconds=max_seconds)
-                if sig is None:
-                    st.error("Couldn't extract reliable signal — use clearer/longer video.")
-                else:
-                    mean_hr, hr_series = get_hr_from_signal(sig, fps)
-                    if hr_series is None:
-                        st.error("Pulse peaks not reliable.")
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4"); tmp.write(vid.read()); tmp.flush(); tmp.close()
+                try:
+                    sig, fps = extract_mean_green_signal_from_video_file(tmp.name, max_seconds=max_seconds)
+                    if sig is None:
+                        st.error("Couldn't extract reliable signal — use a clearer/longer video.")
                     else:
-                        rr_ms = (60000.0/np.array(hr_series))
-                        feats = compute_hrv_from_rr(rr_ms, hr_series)
-                        feats["mean_hr"] = mean_hr
-                        features = feats
-                try: os.remove(tmp)
-                except: pass
+                        mean_hr, hr_series = get_hr_from_signal(sig, fps)
+                        if hr_series is None:
+                            st.error("Pulse peaks not reliable — try again.")
+                        else:
+                            rr_ms = (60000.0/np.array(hr_series))
+                            feats = compute_hrv_from_rr(rr_ms, hr_series)
+                            features = feats
+                except Exception as e:
+                    st.error(f"Video processing failed: {e}")
+                finally:
+                    try: os.unlink(tmp.name)
+                    except: pass
 
     elif method == "Webcam Image":
         cam = st.camera_input("Capture image")
         if cam:
-            st.image(cam, width=300)
+            st.image(cam, width=360)
             if st.button("Predict"):
                 img = Image.open(cam).convert("RGB")
                 arr = np.array(img)
                 mean_g = float(np.mean(arr[:,:,1]))
-                features = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":np.nan, "sd1":18.0, "sd2":36.0, "lf_hf":np.nan, "rr_mean":np.nan, "rr_std":np.nan}
+                feats = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":5.0, "sd1":12.0, "sd2":24.0, "lf_hf":0.8, "rr_mean":800.0, "rr_std":40.0}
+                features = feats
 
     elif method == "Webcam Video":
-        st.write("Click to record webcam video (local only).")
+        st.write("Click 'Start Webcam Recording' (works locally).")
         if st.button("Start Webcam Recording"):
-            tmpf = "tmp_webcam_record.mp4"
+            tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4"); tmpf.close()
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
-                st.error("Cannot access webcam.")
+                st.error("Cannot access webcam. Ensure local run and camera permission.")
             else:
                 fps = 20.0
                 ret, frame = cap.read()
                 if not ret:
-                    st.error("Cannot read webcam.")
+                    st.error("Cannot read webcam frame.")
                 else:
                     h,w = frame.shape[:2]
-                    out = cv2.VideoWriter(tmpf, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w,h))
+                    out = cv2.VideoWriter(tmpf.name, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w,h))
                     t0 = time.time()
                     progress = st.progress(0)
                     while True:
@@ -454,7 +461,7 @@ with left:
                     out.release(); cap.release()
                     st.success("Recording finished — processing...")
                     try:
-                        sig, fps = extract_mean_green_signal_from_video_file(tmpf, max_seconds=rec_seconds)
+                        sig, fps = extract_mean_green_signal_from_video_file(tmpf.name, max_seconds=rec_seconds)
                         if sig is None:
                             st.error("Couldn't extract reliable signal from webcam video.")
                         else:
@@ -464,12 +471,11 @@ with left:
                             else:
                                 rr_ms = (60000.0/np.array(hr_series))
                                 feats = compute_hrv_from_rr(rr_ms, hr_series)
-                                feats["mean_hr"] = mean_hr
                                 features = feats
                     except Exception as e:
                         st.error(f"Processing failed: {e}")
                     finally:
-                        try: os.remove(tmpf)
+                        try: os.unlink(tmpf.name)
                         except: pass
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -484,90 +490,69 @@ with right:
 # ---------------------------
 # After prediction: results
 # ---------------------------
-if features is not None:
-    # Ensure features contains all keys
-    feats = {k: float(features.get(k, np.nan)) for k in FEATURE_ORDER}
+if 'features' in locals() and features is not None:
+    feats = {k: float(features.get(k, 0.0) if features.get(k) is not None else 0.0) for k in FEATURE_ORDER}
     prob, parts = predict_ensemble(feats)
-    stress_label = categorize_stress(prob, lang)
-    hr_label = categorize_hr(feats.get("mean_hr", 0.0), lang)
+    stress_label = categorize_stress(prob)
+    hr_label = categorize_hr(feats.get("mean_hr", 0.0))
     risk_pct, risk_cat = heart_attack_risk_heuristic(prob, feats.get("mean_hr", 0.0))
-    sentence = f"HR ≈ {feats.get('mean_hr', np.nan):.0f} bpm ({hr_label}). Stress: {stress_label} ({prob:.2f}). Heart-attack estimate: {risk_pct:.0f}% ({risk_cat})."
+    summary_sentence = f"Predicted HR ≈ {feats.get('mean_hr',0):.0f} bpm | Stress: {stress_label} | Attack risk ≈ {risk_pct:.0f}% ({risk_cat})"
 
-    # gauge
+    # Gauge
     if go is not None:
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=feats.get("mean_hr", 60),
-            gauge={'axis':{'range':[30,180]}, 'bar':{'color':'#ff4d6d'}},
-            title={'text': "<b>Heart Rate (bpm)</b>"}
-        ))
+        fig = go.Figure(go.Indicator(mode="gauge+number", value=feats.get("mean_hr",60),
+                                    gauge={'axis':{'range':[30,180]}, 'bar':{'color':'#ff4d6d'}},
+                                    title={'text': "<b>Heart Rate (bpm)</b>"}))
         fig.update_layout(height=300, margin=dict(t=10,b=0,l=0,r=0), paper_bgcolor="white", font_color="#0b1721")
         gauge_placeholder.plotly_chart(fig, use_container_width=True)
     else:
-        gauge_placeholder.info(f"HR: {feats.get('mean_hr', np.nan):.0f} bpm")
+        gauge_placeholder.info(f"HR: {feats.get('mean_hr',0):.0f} bpm")
 
-    # neon card
-    st.markdown(
-        f"""
-        <div class="card" style="margin-top:12px">
-          <h3 style="color:#c41b23; margin-bottom:6px">Result</h3>
-          <div class="muted">{sentence}</div>
-          <div style="height:10px"></div>
-          <div class="stress-outer"><div class="stress-inner" style="width:{int(prob*100)}%;">{int(prob*100)}%</div></div>
-          <div style="height:12px"></div>
-          <div style="display:flex; gap:10px;">
-            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#c41b23">{stress_label}</b><div class="small muted">Stress</div></div>
-            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#0b1721">{int(feats.get('mean_hr',0))} bpm</b><div class="small muted">Heart Rate</div></div>
-            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#f97316">{int(risk_pct)}%</b><div class="small muted">Attack Risk</div></div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # result card with stress bar
+    st.markdown(f"""
+    <div class="card" style="margin-top:12px">
+      <h3 style="color:#c41b23; margin-bottom:6px">Result</h3>
+      <div class="muted">{summary_sentence}</div>
+      <div style="height:10px"></div>
+      <div class="stress-outer"><div class="stress-inner" style="width:{int(prob*100)}%;">{int(prob*100)}%</div></div>
+      <div style="height:12px"></div>
+      <div style="display:flex; gap:10px;">
+        <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#c41b23">{stress_label}</b><div class="muted">Stress</div></div>
+        <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#0b1721">{int(feats.get('mean_hr',0))} bpm</b><div class="muted">Heart Rate</div></div>
+        <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#f97316">{int(risk_pct)}%</b><div class="muted">Attack Risk</div></div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ---------------------------
-# SHAP explainability (improved)
-# ---------------------------
-if show_shap and shap is not None and rf is not None:
-    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
-    st.subheader("SHAP contributions")
+    # SHAP contributions (safe)
+    if show_shap:
+        st.markdown("<div class='card' style='margin-top:14px'>", unsafe_allow_html=True)
+        st.subheader("SHAP contributions")
+        try:
+            if shap is None:
+                st.info("SHAP not installed. Install shap to enable feature contributions.")
+            else:
+                model_for_shap = rf or mlp or xgb or stacker
+                if model_for_shap is None:
+                    st.info("No suitable model for SHAP explainability is available.")
+                else:
+                    # create DataFrame single row with same-length numeric values
+                    X_df = pd.DataFrame([vectorize_features(feats).ravel()], columns=FEATURE_ORDER)
+                    explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(X_df))
+                    shap_vals = explainer(X_df)
+                    # shap_vals.values shape may be (1,n) or (1,1,n) depending on model; normalize accordingly
+                    vals = np.array(shap_vals.values).reshape(-1)[:len(FEATURE_ORDER)]
+                    sh_df = pd.DataFrame({"Feature": FEATURE_ORDER, "SHAP": np.round(vals, 4)})
+                    st.table(sh_df)
+        except Exception as e:
+            st.info(f"SHAP not available: {e}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    try:
-        # 1) Replace NaN with safe median defaults
-        safe_feats = {k: (feats[k] if not np.isnan(feats[k]) else 0.0) for k in FEATURE_ORDER}
-
-        # 2) Create proper dataframe
-        feature_columns = FEATURE_ORDER.copy()
-        input_df = pd.DataFrame([[safe_feats[c] for c in feature_columns]], columns=feature_columns)
-
-        # 3) KernelExplainer (works on ANY classifier)
-        background = np.zeros((1, len(feature_columns)))
-        explainer = shap.KernelExplainer(lambda X: rf.predict_proba(X)[:,1], background)
-
-        shap_values = explainer.shap_values(input_df)
-
-        # 4) SHAP vector
-        vals = shap_values.reshape(-1)
-
-        # 5) Display table
-        sh_df = pd.DataFrame({
-            "Feature": feature_columns,
-            "SHAP": vals.round(4)
-        })
-
-        st.table(sh_df)
-
-    except Exception as e:
-        st.info(f"SHAP not available: {e}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ---------------------------
-    # AI Explanation (Gemini safe + fallback)
-    # ---------------------------
-    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+    # AI Explanation (local templates)
+    st.markdown("<div class='card' style='margin-top:14px'>", unsafe_allow_html=True)
     st.subheader("AI Explanation")
-    ai_text = generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang)
-    st.write(ai_text)
+    ai_text = generate_explanation_text(feats, stress_label, hr_label, risk_pct, risk_cat, lang=language)
+    st.markdown(f"```text\n{ai_text}\n```")
     st.markdown("</div>", unsafe_allow_html=True)
 
-# small spacer
 st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
