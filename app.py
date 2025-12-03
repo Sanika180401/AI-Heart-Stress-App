@@ -8,9 +8,8 @@ import streamlit as st
 from PIL import Image
 from joblib import load
 from scipy.signal import find_peaks, butter, filtfilt, welch, detrend
-from google import genai
 
-# Optional libraries
+# Optional libs
 try:
     import plotly.graph_objects as go
 except:
@@ -21,515 +20,543 @@ try:
 except:
     shap = None
 
+# Try to import google-genai - if absent, we'll fall back safely
+try:
+    from google import genai
+except Exception:
+    genai = None
 
-# ============================================================
-#   STREAMLIT CONFIG + LIGHT THEME
-# ============================================================
+# ---------------------------
+# Streamlit layout + theme
+# ---------------------------
 st.set_page_config(page_title="AI Heart Rate & Stress Analyzer", layout="wide")
 
 st.markdown(
     """
 <style>
-/* Background */
 .stApp { background: #f7f9fb; color:#0b1721; }
-
-/* HEADER */
-.header { display:flex; gap:16px; align-items:center; }
-
-/* LOGO BOX */
-.logo-box {
-    width:70px; height:70px; border-radius:15px;
-    background:linear-gradient(135deg,#ff4d6d,#ff7a59);
-    display:flex; justify-content:center; align-items:center;
-    color:white; font-size:28px; font-weight:700;
-    box-shadow:0 6px 18px rgba(0,0,0,0.15);
-}
-
-/* CARD */
-.card {
-    background:white; border-radius:14px;
-    padding:18px; margin-bottom:14px;
-    box-shadow:0 6px 20px rgba(15,23,42,0.07);
-    border:1px solid rgba(0,0,0,0.04);
-}
-
-/* BUTTONS */
-.stButton > button {
-    background:linear-gradient(90deg,#ff4d6d,#ff7a59);
-    color:white; border:none; border-radius:10px;
-    padding:10px 20px; font-weight:600;
-}
-.stButton > button:hover {
-    transform:translateY(-2px);
-}
-
-/* SECONDARY BUTTON */
-.stButton.secondary > button {
-    background:linear-gradient(90deg,#06b6d4,#3b82f6);
-}
-
-/* Compact image preview */
-.preview-img {
-    width:300px; height:180px; object-fit:cover;
-    border-radius:10px; border:1px solid #ddd;
-}
-
-/* Stress bar */
+.logo-box { width:70px; height:70px; border-radius:15px;
+  background:linear-gradient(135deg,#ff4d6d,#ff7a59);
+  display:flex; align-items:center; justify-content:center;
+  color:white; font-size:28px; font-weight:700; box-shadow:0 6px 18px rgba(0,0,0,0.12); }
+.card { background:white; border-radius:14px; padding:18px; margin-bottom:14px;
+  box-shadow:0 6px 20px rgba(15,23,42,0.07); border:1px solid rgba(0,0,0,0.04); }
+.stButton > button { background:linear-gradient(90deg,#ff4d6d,#ff7a59); color:white; border:none; border-radius:10px; padding:10px 20px; font-weight:600; }
+.preview-img { width:300px; height:180px; object-fit:cover; border-radius:10px; border:1px solid #ddd; }
 .stress-outer { background:#eef2f7; padding:5px; border-radius:12px; }
-.stress-inner {
-    height:26px; border-radius:10px;
-    background:linear-gradient(90deg,#ff7a59,#ff4d6d);
-    color:white; font-weight:700; text-align:right;
-    padding-right:8px;
-    transition:width 1.0s ease;
-}
-
-/* Muted text */
+.stress-inner { height:26px; border-radius:10px; background:linear-gradient(90deg,#ff7a59,#ff4d6d); color:white; font-weight:700; text-align:right; padding-right:8px; transition:width 1.0s ease; }
 .muted { color:#64748b; font-size:13px; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# ============================================================
-#    DIRECTORIES & MODELS
-# ============================================================
+# ---------------------------
+# Paths and models
+# ---------------------------
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(ROOT, "models")
 ASSETS_DIR = os.path.join(ROOT, "assets")
-
 LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
 
-def load_model(name):
-    path = os.path.join(MODELS_DIR, name)
-    if os.path.exists(path):
+def load_model_safe(name):
+    p = os.path.join(MODELS_DIR, name)
+    if os.path.exists(p):
         try:
-            return load(path)
-        except:
+            return load(p)
+        except Exception:
             return None
     return None
 
-scaler = load_model("scaler.pkl")
-stacker = load_model("stacker.pkl")
-mlp = load_model("mlp.pkl")
-rf = load_model("rf.pkl")
-xgb = load_model("xgb.pkl")
+scaler = load_model_safe("scaler.pkl")
+stacker = load_model_safe("stacker.pkl")
+mlp = load_model_safe("mlp.pkl")
+rf = load_model_safe("rf.pkl")
+xgb = load_model_safe("xgb.pkl")
 
+# ---------------------------
+# Gemini / AI helper (safe)
+# ---------------------------
 
-# ============================================================
-#   GEMINI (FREE) INITIALIZATION
-# ============================================================
-def load_gemini_client():
+def get_gemini_client_from_file():
+    """
+    Try to configure google-genai (if installed) using gemini_key.txt.
+    Return a client object or None.
+    """
     keyfile = os.path.join(ROOT, "gemini_key.txt")
-    if os.path.exists(keyfile):
+    if genai is None or not os.path.exists(keyfile):
+        return None
+    try:
+        key = open(keyfile, "r", encoding="utf-8").read().strip()
+        # some genai versions use genai.configure(api_key=...) others different; try configure
         try:
-            key = open(keyfile, "r").read().strip()
-            return genai.Client(api_key=key)
-        except:
-            return None
-    return None
+            genai.configure(api_key=key)
+            # keep genai module as client
+            return genai
+        except Exception:
+            # if module provides Client class, attempt to instantiate
+            try:
+                client = genai.Client(api_key=key)
+                return client
+            except Exception:
+                return None
+    except Exception:
+        return None
 
-gemini_client = load_gemini_client()
+gemini = get_gemini_client_from_file()
 
+# A robust fallback local explainer if Gemini fails or model unsupported
+def local_explain(feats, prob, risk_pct, risk_cat, lang="English"):
+    # Create a short one-liner and three recommendations heuristically
+    hr = int(round(feats.get("mean_hr", 0)))
+    stress_cat = "Low" if prob < 0.35 else ("Moderate" if prob < 0.65 else "High")
+    if lang == "Hindi":
+        one = f"अनुमानित HR ≈ {hr} bpm, तनाव: {stress_cat},  हार्ट-रिस्क ~ {int(risk_pct)}%."
+        rec1 = "गहरी श्वास लें (2 मिनट)।"
+        rec2 = "आज हल्की फिजिकल एक्टिविटी करें।"
+        rec3 = "लंबे समय में नींद व आहार सुधारें।"
+        care = "यदि साँस फूलना या वेज दर्द हो तो डॉक्टर से मिलें।"
+    elif lang == "Marathi":
+        one = f"अनुमानित HR ≈ {hr} bpm, ताण: {stress_cat}, हार्ट-रिस्क ~ {int(risk_pct)}%."
+        rec1 = "सखोल श्वास घ्या (2 मिनिटे)."
+        rec2 = "आज हलकी व्यायाम करा."
+        rec3 = "दीर्घकालीन: झोप व आहार सांभाळा."
+        care = "श्वास फु सर्व किंवा छातीत वेदना तर वैद्याकरांची मदत घ्या."
+    else:
+        one = f"Predicted HR ≈ {hr} bpm, Stress: {stress_cat}, Heart-risk ≈ {int(risk_pct)}%."
+        rec1 = "Do slow breathing for 2 minutes (4s in, 4s out)."
+        rec2 = "Take a short walk and hydrate today."
+        rec3 = "Improve sleep and reduce caffeine long-term."
+        care = "Seek medical help for chest pain, fainting, or shortness of breath."
 
-# ============================================================
-#   LANGUAGE SYSTEM (EN / HI / MR)
-# ============================================================
-LANG = st.sidebar.selectbox("Language", ["English", "Hindi", "Marathi"])
+    out = f"{one}\n\nRecommendations:\n1. {rec1}\n2. {rec2}\n3. {rec3}\n\nWhen to seek care: {care}"
+    return out
 
-def T(en, hi, mr):
-    if LANG == "English": return en
-    if LANG == "Hindi": return hi
-    return mr
+def safe_gemini_generate(feats, prob, risk_pct, risk_cat, lang="English"):
+    """
+    Try to call Gemini safely. If any error / unsupported model, return None so we fallback locally.
+    We DO NOT raise exceptions to Streamlit; we swallow and return fallback text.
+    """
+    if gemini is None:
+        return None  # caller will fallback
 
+    prompt_lang = {"English":"English","Hindi":"Hindi","Marathi":"Marathi"}.get(lang, "English")
+    prompt = (
+        f"You are a concise medical assistant. Reply in {prompt_lang}.\n\n"
+        f"HRV features: {feats}\nStress probability: {prob:.2f}\n"
+        f"Heart attack estimate: {risk_pct:.0f}% ({risk_cat})\n\n"
+        "Provide: 1) One-sentence explanation. 2) Three short recommendations (immediate, today, long-term). "
+        "3) One-sentence when to seek medical care."
+    )
 
-# ============================================================
-#   SIGNAL PROCESSING (rPPG)
-# ============================================================
+    # Try a few model names (some regions / SDKs use different names); if any works, return text.
+    candidate_models = ["gemini-1.5-realtime", "gemini-1.5", "gemini-1.5-flash", "gemini-1.0"]
+    # If module is configured like genai (with generate_text or models.generate_content), attempt robustly
+    try:
+        # preferred approach: if module has models.generate_content use it (newer SDK)
+        if hasattr(gemini, "models") and hasattr(gemini.models, "generate_content"):
+            for m in candidate_models:
+                try:
+                    resp = gemini.models.generate_content(model=m, prompt=prompt)  # some SDK variants accept 'prompt'
+                    # resp may be object or dict-like; try to extract .text or .output[0]
+                    if hasattr(resp, "content"):
+                        txt = getattr(resp, "content")
+                        return txt
+                    # check common shapes
+                    if isinstance(resp, dict):
+                        # new API may return {'candidates':[{'content':'...'}]}
+                        if "candidates" in resp and len(resp["candidates"])>0 and "content" in resp["candidates"][0]:
+                            return resp["candidates"][0]["content"]
+                        if "output" in resp:
+                            try:
+                                return json.dumps(resp["output"])[:2000]
+                            except:
+                                return str(resp)
+                    # fallback
+                    try:
+                        return str(resp)
+                    except:
+                        pass
+                except Exception:
+                    continue
+
+        # older SDK: gemini.generate_text or genai.generate_text style
+        if hasattr(gemini, "generate_text"):
+            for m in candidate_models:
+                try:
+                    resp = gemini.generate_text(model=m, prompt=prompt)
+                    # try common accessors
+                    if hasattr(resp, "text"):
+                        return resp.text
+                    if isinstance(resp, dict) and "candidates" in resp and len(resp["candidates"])>0:
+                        return resp["candidates"][0].get("content", str(resp))
+                    return str(resp)
+                except Exception:
+                    continue
+
+        # some SDKs expose Client with .models or .generate; try generic
+        # If nothing worked, return None to fallback.
+        return None
+    except Exception:
+        return None
+
+def generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang="English"):
+    # Try Gemini first (safe); if fails, use local fallback.
+    gem = safe_gemini_generate(feats, prob, risk_pct, risk_cat, lang)
+    if gem is not None:
+        return gem
+    # fallback local explanation (no external call, guaranteed)
+    return local_explain(feats, prob, risk_pct, risk_cat, lang)
+
+# ---------------------------
+# Signal processing helpers
+# ---------------------------
 def bandpass(sig, fs, low=0.7, high=4.0, order=3):
-    nyq = fs/2
+    nyq = 0.5*fs
     b,a = butter(order, [low/nyq, high/nyq], btype='band')
     return filtfilt(b,a,sig)
 
-def extract_green(video_path, max_seconds=10):
+def extract_mean_green_signal_from_video_file(video_path, max_seconds=10, resize_width=360):
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened(): return None, None
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    frames = int(min(cap.get(cv2.CAP_PROP_FRAME_COUNT), fps*max_seconds))
-
-    values=[]
-    for _ in range(frames):
+    if not cap.isOpened():
+        return None, None
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or fps*max_seconds)
+    max_frames = min(total, int(fps*max_seconds))
+    sig = []
+    frames = 0
+    while frames < max_frames:
         ret, frame = cap.read()
         if not ret: break
-        g = np.mean(frame[:,:,1])
-        values.append(g)
-
+        h,w = frame.shape[:2]
+        if w > resize_width:
+            scale = resize_width / w
+            frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+        cx, cy = w//2, h//2
+        wbox, hbox = int(w*0.35), int(h*0.45)
+        x1,y1 = max(0, cx-wbox//2), max(0, cy-hbox//2)
+        x2,y2 = min(w, cx+wbox//2), min(h, cy+hbox//2)
+        roi = frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            frames += 1
+            continue
+        sig.append(float(np.mean(roi[:,:,1])))
+        frames += 1
     cap.release()
-    if len(values)<20: return None, fps
-    return np.array(values), fps
+    if len(sig) < 8:
+        return None, fps
+    return np.array(sig), fps
 
-def heart_rate_from_signal(sig, fs):
-    sig = sig - np.mean(sig)
+def get_hr_from_signal(sig, fs):
     try:
-        sig = bandpass(sig, fs)
-    except:
-        pass
+        filt = bandpass(sig - np.mean(sig), fs)
+    except Exception:
+        filt = sig - np.mean(sig)
+    distance = max(1, int(0.4 * fs))
+    peaks, _ = find_peaks(filt, distance=distance, prominence=np.std(filt)*0.18)
+    if len(peaks) < 2:
+        return None, None
+    times = peaks / float(fs)
+    rr = np.diff(times) * 1000.0
+    hr_series = 60000.0/rr
+    return float(np.mean(hr_series)), hr_series
 
-    peaks,_ = find_peaks(sig, distance=int(0.4*fs))
-    if len(peaks)<2: return None, None
-
-    times = peaks/fs
-    rr = np.diff(times)*1000
-    hr = 60000/rr
-    return float(np.mean(hr)), hr
-
-
-def compute_hrv(rr_ms):
-    if rr_ms is None or len(rr_ms)<2: return None
+def compute_hrv_from_rr(rr_ms, hr_series=None):
+    if rr_ms is None or len(rr_ms) < 2:
+        return None
     diff = np.diff(rr_ms)
-    rmssd = np.sqrt(np.mean(diff**2))
-    pnn50 = np.sum(np.abs(diff)>50)/len(diff)*100
-    sd1 = np.sqrt(np.var(diff)/2)
-    sd2 = np.sqrt(max(0,2*np.var(rr_ms)-np.var(diff)/2))
-    return {
-        "rmssd":float(rmssd),
-        "pnn50":float(pnn50),
-        "sd1":float(sd1),
-        "sd2":float(sd2),
-        "rr_mean":float(np.mean(rr_ms)),
-        "rr_std":float(np.std(rr_ms)),
-    }
+    rmssd = float(np.sqrt(np.mean(diff**2)))
+    pnn50 = float(np.sum(np.abs(diff) > 50) / len(diff) * 100.0)
+    sd1 = float(np.sqrt(np.var(diff) / 2.0))
+    sd2 = float(np.sqrt(max(0.0, 2*np.var(rr_ms) - np.var(diff)/2.0)))
+    rr_mean = float(np.mean(rr_ms)); rr_std = float(np.std(rr_ms))
+    mean_hr = float(np.mean(hr_series)) if hr_series is not None else float(60000.0/np.mean(rr_ms))
+    # lf/hf approx
+    lf_hf = 0.0
+    try:
+        fs_interp=4.0
+        times=np.cumsum(rr_ms)/1000.0
+        if len(times) >= 4:
+            t_interp = np.arange(0, times[-1], 1.0/fs_interp)
+            inst_hr = 60000.0/rr_ms
+            beat_times = times[:-1]
+            interp = np.interp(t_interp, beat_times, inst_hr[:len(beat_times)])
+            f,p = welch(detrend(interp), fs=fs_interp, nperseg=min(256, len(interp)))
+            lf_mask = (f>=0.04) & (f<=0.15)
+            hf_mask = (f>0.15) & (f<=0.4)
+            lf = np.trapz(p[lf_mask], f[lf_mask]) if np.any(lf_mask) else 0.0
+            hf = np.trapz(p[hf_mask], f[hf_mask]) if np.any(hf_mask) else 0.0
+            lf_hf = float(lf/hf) if hf > 0 else 0.0
+    except Exception:
+        lf_hf = 0.0
+    return {"mean_hr":mean_hr,"rmssd":rmssd,"pnn50":pnn50,"sd1":sd1,"sd2":sd2,"lf_hf":lf_hf,"rr_mean":rr_mean,"rr_std":rr_std}
 
-
-# ============================================================
-#   PREDICTORS
-# ============================================================
 FEATURE_ORDER = ['mean_hr','rmssd','pnn50','sd1','sd2','lf_hf','rr_mean','rr_std']
 
-def vectorize(f):
-    return np.array([f.get(k, np.nan) for k in FEATURE_ORDER]).reshape(1,-1)
+def vectorize_features(feats):
+    return np.array([feats.get(k, np.nan) for k in FEATURE_ORDER]).reshape(1, -1)
 
+# Ensemble predict
 def predict_ensemble(feats):
-    X = vectorize(feats)
+    X = vectorize_features(feats)
     try:
-        Xs = scaler.transform(X)
-    except:
+        Xs = scaler.transform(X) if scaler is not None else X
+    except Exception:
         Xs = X
-
     probs=[]
-    for m in [mlp, rf, xgb]:
-        if m is None: continue
-        try: p = m.predict_proba(Xs)[0,1]
-        except:
-            try: p = m.predict(Xs)[0]
-            except: p=0.5
-        probs.append(float(p))
-
+    def safe_prob(m):
+        try:
+            return float(m.predict_proba(Xs)[:,1][0])
+        except Exception:
+            try:
+                return float(m.predict(Xs)[0])
+            except Exception:
+                return 0.5
+    if mlp is not None: probs.append(safe_prob(mlp))
+    if rf is not None: probs.append(safe_prob(rf))
+    if xgb is not None: probs.append(safe_prob(xgb))
     if len(probs)==0:
-        return 0.5, []
-
+        return 0.5, probs
     meta = np.array(probs).reshape(1,-1)
     try:
-        final = stacker.predict_proba(meta)[0,1]
-    except:
-        final = np.mean(probs)
+        final = float(stacker.predict_proba(meta)[:,1][0]) if stacker is not None else float(np.mean(probs))
+    except Exception:
+        final = float(np.mean(probs))
+    return final, probs
 
-    return float(final), probs
+def categorize_stress(p, lang="English"):
+    if p < 0.35: return {"English":"Low","Hindi":"कम","Marathi":"कमी"}[lang]
+    if p < 0.65: return {"English":"Moderate","Hindi":"मध्यम","Marathi":"मध्यम"}[lang]
+    return {"English":"High","Hindi":"उच्च","Marathi":"जास्त"}[lang]
 
+def categorize_hr(hr, lang="English"):
+    if hr < 60: return {"English":"Low","Hindi":"कम","Marathi":"कमी"}[lang]
+    if hr <= 100: return {"English":"Normal","Hindi":"सामान्य","Marathi":"सामान्य"}[lang]
+    return {"English":"High","Hindi":"उच्च","Marathi":"उच्च"}[lang]
 
-def stress_label(p):
-    if p<0.35: return T("Low","कम","कमी")
-    if p<0.65: return T("Moderate","मध्यम","मध्यम")
-    return T("High","उच्च","जास्त")
+def heart_attack_risk_heuristic(prob, mean_hr):
+    hr_score = max(0.0, (mean_hr - 60.0) / 60.0)
+    risk_raw = 0.6 * prob + 0.4 * min(1.0, hr_score)
+    risk_pct = float(np.clip(risk_raw * 100.0, 0, 100))
+    if risk_pct < 20: cat="Low"
+    elif risk_pct < 50: cat="Moderate"
+    else: cat="High"
+    return risk_pct, cat
 
-
-def heart_attack_risk(prob, hr):
-    hr_score = max(0,(hr-60)/60)
-    raw = 0.6*prob + 0.4*min(1,hr_score)
-    pct = float(np.clip(raw*100,0,100))
-    if pct<20: cat=T("Low","कम","कमी")
-    elif pct<50: cat=T("Moderate","मध्यम","मध्यम")
-    else: cat=T("High","उच्च","जास्त")
-    return pct, cat
-
-
-# ============================================================
-#   AI EXPLAINER — GEMINI (FREE)
-# ============================================================
-def gemini_explain(feats, prob, risk_pct, risk_cat):
-    if gemini_client is None:
-        return T(
-            "AI assistant unavailable (missing gemini_key.txt).",
-            "AI सहायक उपलब्ध नहीं (gemini_key.txt गायब)।",
-            "AI सहाय्य उपलब्ध नाही (gemini_key.txt नाही)."
-        )
-
-    prompt = f"""
-You are a friendly medical helper. Patient:
-
-HRV Features: {feats}
-Stress Probability: {prob:.2f}
-Heart Attack Estimate: {risk_pct:.0f}% ({risk_cat})
-
-Give very short:
-1. One line explanation
-2. Three small recommendations
-3. One line: when to seek medical care
-"""
-
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        return f"Gemini error: {e}"
-
-
-# ============================================================
-#   HEADER UI
-# ============================================================
-col1,col2 = st.columns([1,6])
-with col1:
+# ---------------------------
+# UI header / sidebar
+# ---------------------------
+col_logo, col_title = st.columns([0.8, 6])
+with col_logo:
     if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=70)
+        st.image(LOGO_PATH, width=72)
     else:
-        st.markdown('<div class="logo-box">AI</div>', unsafe_allow_html=True)
+        st.markdown('<div class="logo-box">AH</div>', unsafe_allow_html=True)
+with col_title:
+    st.markdown("<h1>AI Heart Rate & Stress Analyzer</h1>", unsafe_allow_html=True)
+    st.markdown('<div class="muted">Heart Rate and Stress Monitoring System for Early Heart Attack Risk Prediction</div>', unsafe_allow_html=True)
 
-with col2:
-    st.markdown("<h1 style='color:#c41b23; margin-bottom:0;'>AI Heart Rate & Stress Analyzer</h1>", unsafe_allow_html=True)
-    st.markdown(f"<div class='muted'>{T('Heart Rate and Stress Monitoring System for Early Heart Attack Risk Prediction','हृदयाघात के जोखिम की शीघ्र भविष्यवाणी के लिए हृदय गति और तनाव निगरानी प्रणाली','हृदयविकाराच्या सुरुवातीच्या जोखीम अंदाजासाठी हृदय गती आणि ताण देखरेख प्रणाली')}</div>", unsafe_allow_html=True)
-
-
-# ============================================================
-#   SIDEBAR INPUT
-# ============================================================
 with st.sidebar:
-    st.header(T("Input","इनपुट","इनपुट"))
-    method = st.radio(T("Select Method","विधि चुनें","पद्धत निवडा"),
-                      ["Manual Entry","Upload Image","Upload Video","Webcam Image","Webcam Video"])
-
-    max_seconds = st.slider("Video Duration", 6, 20, 10)
-    rec_seconds = st.slider("Webcam Record Sec", 4, 12, 8)
-
-    show_shap = st.checkbox("Show SHAP", True)
-
+    st.header("Input")
+    method = st.radio("Choose method", ["Manual Entry","Upload Video","Upload Image","Webcam Image","Webcam Video"])
+    max_seconds = st.slider("Max video seconds", 6, 20, 10)
+    rec_seconds = st.slider("Webcam recording seconds", 4, 12, 8)
+    show_shap = st.checkbox("Show SHAP Explainability", True)
+    lang = st.selectbox("Language", ["English","Hindi","Marathi"])
     st.markdown("---")
-    st.markdown(f"**Gemini AI:** {'Available' if gemini_client else 'Missing Key'}")
+    st.markdown(f"Gemini AI: {'Available' if gemini is not None else 'Missing'}")
 
-
-# ============================================================
-#   MAIN LAYOUT
-# ============================================================
-left, right = st.columns([1,1.4])
-
+# Main layout placeholders
+left, right = st.columns([1, 1.4])
 features = None
 
-# ============================================================
-# LEFT PANEL
-# ============================================================
 with left:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader(T("Input Data","इनपुट डेटा","डेटा इनपुट"))
-
-    # ------------------------
-    # Manual Entry
-    # ------------------------
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Input")
     if method == "Manual Entry":
-        vals={}
+        vals = {}
         cols = st.columns(2)
-        for i,f in enumerate(FEATURE_ORDER):
+        for i, f in enumerate(FEATURE_ORDER):
             with cols[i%2]:
-                default = 75.0 if f=="mean_hr" else 1.0
-                vals[f]=st.number_input(f, value=float(default))
-        if st.button(T("Predict","अनुमान लगाएं","भाकीत करा")):
+                default = 75.0 if f=='mean_hr' else 1.0
+                vals[f] = st.number_input(f, value=float(default))
+        if st.button("Predict"):
             features = vals
 
-    # ------------------------
-    # Upload Image
-    # ------------------------
     elif method == "Upload Image":
-        up = st.file_uploader("Upload Image", type=["jpg","jpeg","png"])
-        if up:
-            st.image(up, width=300)
-            if st.button(T("Predict","अनुमान लगाएं","प्रेडिक्ट")):
-                img = Image.open(up)
+        uploaded = st.file_uploader("Image", type=["jpg","jpeg","png"])
+        if uploaded:
+            st.image(uploaded, width=300, caption="Preview")
+            if st.button("Predict"):
+                img = Image.open(uploaded).convert("RGB")
                 arr = np.array(img)
-                g = np.mean(arr[:,:,1])
-                features = {
-                    "mean_hr":72+(128-g)/18,
-                    "rmssd":28, "pnn50":np.nan,
-                    "sd1":18, "sd2":36,
-                    "lf_hf":np.nan,
-                    "rr_mean":np.nan, "rr_std":np.nan
-                }
+                mean_g = float(np.mean(arr[:,:,1]))
+                features = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":np.nan, "sd1":18.0, "sd2":36.0, "lf_hf":np.nan, "rr_mean":np.nan, "rr_std":np.nan}
 
-    # ------------------------
-    # Upload Video
-    # ------------------------
     elif method == "Upload Video":
-        vid = st.file_uploader("Upload Video", type=["mp4","mov","avi"])
+        vid = st.file_uploader("Video (mp4,mov,avi)", type=["mp4","mov","avi"])
         if vid:
-            st.video(vid)
-            if st.button(T("Predict","अनुमान लगाएं","प्रेडिक्ट")):
-                tmp = "temp_vid.mp4"
+            st.video(vid, start_time=0)
+            if st.button("Predict"):
+                tmp = "tmp_uploaded_video.mp4"
                 open(tmp,"wb").write(vid.read())
-                sig, fs = extract_green(tmp, max_seconds)
+                sig, fps = extract_mean_green_signal_from_video_file(tmp, max_seconds=max_seconds)
                 if sig is None:
-                    st.error(T("Could not extract signal.","सिग्नल नहीं निकला।","सिग्नल मिळाला नाही."))
+                    st.error("Couldn't extract reliable signal — use clearer/longer video.")
                 else:
-                    hr, series = heart_rate_from_signal(sig, fs)
-                    rr = 60000/series
-                    hrv = compute_hrv(rr)
-                    features = {"mean_hr":hr, "lf_hf":0.5, **hrv}
-                os.remove(tmp)
+                    mean_hr, hr_series = get_hr_from_signal(sig, fps)
+                    if hr_series is None:
+                        st.error("Pulse peaks not reliable.")
+                    else:
+                        rr_ms = (60000.0/np.array(hr_series))
+                        feats = compute_hrv_from_rr(rr_ms, hr_series)
+                        feats["mean_hr"] = mean_hr
+                        features = feats
+                try: os.remove(tmp)
+                except: pass
 
-    # ------------------------
-    # Webcam Image
-    # ------------------------
     elif method == "Webcam Image":
-        cam = st.camera_input("Capture")
+        cam = st.camera_input("Capture image")
         if cam:
             st.image(cam, width=300)
-            if st.button(T("Predict","अनुमान लगाएं","प्रेडिक्ट")):
-                img = Image.open(cam)
+            if st.button("Predict"):
+                img = Image.open(cam).convert("RGB")
                 arr = np.array(img)
-                g = np.mean(arr[:,:,1])
-                features = {
-                    "mean_hr":72+(128-g)/18,
-                    "rmssd":28, "pnn50":np.nan,
-                    "sd1":18, "sd2":36,
-                    "lf_hf":np.nan,
-                    "rr_mean":np.nan, "rr_std":np.nan
-                }
+                mean_g = float(np.mean(arr[:,:,1]))
+                features = {"mean_hr":72 + (128-mean_g)/18.0, "rmssd":28.0, "pnn50":np.nan, "sd1":18.0, "sd2":36.0, "lf_hf":np.nan, "rr_mean":np.nan, "rr_std":np.nan}
 
-    # ------------------------
-    # Webcam Video
-    # ------------------------
     elif method == "Webcam Video":
-        if st.button("Start Recording"):
+        st.write("Click to record webcam video (local only).")
+        if st.button("Start Webcam Recording"):
+            tmpf = "tmp_webcam_record.mp4"
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
-                st.error("Camera not available.")
+                st.error("Cannot access webcam.")
             else:
-                tmp = "webcam_temp.mp4"
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                ret, frm = cap.read()
-                h,w = frm.shape[:2]
-                out = cv2.VideoWriter(tmp, fourcc, 20, (w,h))
-                t0=time.time()
-                pg = st.progress(0)
-
-                while True:
-                    ret, frame = cap.read()
-                    if not ret: break
-                    out.write(frame)
-                    elapsed=time.time()-t0
-                    pg.progress(min(100,int((elapsed/rec_seconds)*100)))
-                    if elapsed>=rec_seconds: break
-
-                cap.release()
-                out.release()
-
-                st.success("Recorded. Processing...")
-                sig, fs = extract_green(tmp, rec_seconds)
-                if sig is not None:
-                    hr, series = heart_rate_from_signal(sig, fs)
-                    rr = 60000/series
-                    hrv = compute_hrv(rr)
-                    features = {"mean_hr":hr, "lf_hf":0.5, **hrv}
-                os.remove(tmp)
+                fps = 20.0
+                ret, frame = cap.read()
+                if not ret:
+                    st.error("Cannot read webcam.")
+                else:
+                    h,w = frame.shape[:2]
+                    out = cv2.VideoWriter(tmpf, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w,h))
+                    t0 = time.time()
+                    progress = st.progress(0)
+                    while True:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        out.write(frame)
+                        elapsed = time.time() - t0
+                        progress.progress(min(100, int((elapsed/rec_seconds)*100)))
+                        if elapsed >= rec_seconds:
+                            break
+                    out.release(); cap.release()
+                    st.success("Recording finished — processing...")
+                    try:
+                        sig, fps = extract_mean_green_signal_from_video_file(tmpf, max_seconds=rec_seconds)
+                        if sig is None:
+                            st.error("Couldn't extract reliable signal from webcam video.")
+                        else:
+                            mean_hr, hr_series = get_hr_from_signal(sig, fps)
+                            if hr_series is None:
+                                st.error("Pulse not detected.")
+                            else:
+                                rr_ms = (60000.0/np.array(hr_series))
+                                feats = compute_hrv_from_rr(rr_ms, hr_series)
+                                feats["mean_hr"] = mean_hr
+                                features = feats
+                    except Exception as e:
+                        st.error(f"Processing failed: {e}")
+                    finally:
+                        try: os.remove(tmpf)
+                        except: pass
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-
-# ============================================================
-# RIGHT PANEL
-# ============================================================
 with right:
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader(T("Dashboard","डैशबोर्ड","डॅशबोर्ड"))
-    gauge_area = st.empty()
-    metric_area = st.empty()
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.subheader("Live Dashboard")
+    gauge_placeholder = st.empty()
+    metrics_placeholder = st.empty()
     st.markdown("</div>", unsafe_allow_html=True)
 
-
-# ============================================================
-# DISPLAY RESULTS
-# ============================================================
-if features:
-    feats = {k:float(features.get(k,0)) for k in FEATURE_ORDER}
+# ---------------------------
+# After prediction: results
+# ---------------------------
+if features is not None:
+    # Ensure features contains all keys
+    feats = {k: float(features.get(k, np.nan)) for k in FEATURE_ORDER}
     prob, parts = predict_ensemble(feats)
-    risk_pct, risk_cat = heart_attack_risk(prob, feats["mean_hr"])
+    stress_label = categorize_stress(prob, lang)
+    hr_label = categorize_hr(feats.get("mean_hr", 0.0), lang)
+    risk_pct, risk_cat = heart_attack_risk_heuristic(prob, feats.get("mean_hr", 0.0))
+    sentence = f"HR ≈ {feats.get('mean_hr', np.nan):.0f} bpm ({hr_label}). Stress: {stress_label} ({prob:.2f}). Heart-attack estimate: {risk_pct:.0f}% ({risk_cat})."
 
-    # -------------------------
-    # HEART RATE GAUGE
-    # -------------------------
+    # gauge
     if go is not None:
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
-            value=feats["mean_hr"],
-            title={"text":T("Heart Rate","हार्ट रेट","हार्ट रेट")},
-            gauge={"axis":{"range":[30,180]}, "bar":{"color":"#ff4d6d"}}
+            value=feats.get("mean_hr", 60),
+            gauge={'axis':{'range':[30,180]}, 'bar':{'color':'#ff4d6d'}},
+            title={'text': "<b>Heart Rate (bpm)</b>"}
         ))
-        fig.update_layout(height=260, margin=dict(t=20,b=0))
-        gauge_area.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(height=300, margin=dict(t=10,b=0,l=0,r=0), paper_bgcolor="white", font_color="#0b1721")
+        gauge_placeholder.plotly_chart(fig, use_container_width=True)
     else:
-        gauge_area.info(f"HR: {feats['mean_hr']:.1f}")
+        gauge_placeholder.info(f"HR: {feats.get('mean_hr', np.nan):.0f} bpm")
 
-    # -------------------------
-    # RESULT CARD
-    # -------------------------
-    stress_txt = stress_label(prob)
-    summary = f"{T('Heart Rate','हार्ट रेट','हृदय गती')}: {feats['mean_hr']:.0f} bpm | " \
-              f"{T('Stress','तनाव','ताण')}: {stress_txt} | " \
-              f"{T('Attack Risk','हार्ट अटैक जोखिम','हार्ट अटॅक रिस्क')}: {risk_pct:.0f}%"
-
+    # neon card
     st.markdown(
         f"""
-        <div class="card">
-            <h3 style="color:#c41b23;">{T('Result','परिणाम','निकाल')}</h3>
-            <div class='muted'>{summary}</div>
-            <br>
-            <div class='stress-outer'>
-                <div class='stress-inner' style='width:{int(prob*100)}%;'>
-                    {int(prob*100)}%
-                </div>
-            </div>
+        <div class="card" style="margin-top:12px">
+          <h3 style="color:#c41b23; margin-bottom:6px">Result</h3>
+          <div class="muted">{sentence}</div>
+          <div style="height:10px"></div>
+          <div class="stress-outer"><div class="stress-inner" style="width:{int(prob*100)}%;">{int(prob*100)}%</div></div>
+          <div style="height:12px"></div>
+          <div style="display:flex; gap:10px;">
+            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#c41b23">{stress_label}</b><div class="small muted">Stress</div></div>
+            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#0b1721">{int(feats.get('mean_hr',0))} bpm</b><div class="small muted">Heart Rate</div></div>
+            <div style="flex:1; padding:10px; border-radius:10px; background:#fff;"><b style="color:#f97316">{int(risk_pct)}%</b><div class="small muted">Attack Risk</div></div>
+          </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """, unsafe_allow_html=True)
 
-    # -------------------------
-    # SHAP
-    # -------------------------
-    if show_shap and shap is not None and rf is not None:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("SHAP")
-
+    # ---------------------------
+    # SHAP explainability (fixed shape)
+    # ---------------------------
+    if show_shap and shap is not None and (rf is not None or mlp is not None or xgb is not None):
+        st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+        st.subheader("SHAP contributions")
         try:
-            expl = shap.Explainer(rf)
-            sv = expl(vectorize(feats))
-            vals = np.array(sv.values).reshape(-1)
-
-            df = pd.DataFrame({"Feature":FEATURE_ORDER, "SHAP":vals})
-            st.table(df)
-
+            # Build a DataFrame with the exact feature order and one row
+            feature_columns = FEATURE_ORDER.copy()
+            input_df = pd.DataFrame([[feats.get(c, np.nan) for c in feature_columns]], columns=feature_columns)
+            # choose a model for SHAP
+            model_for_shap = rf or mlp or xgb or stacker
+            explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(input_df))
+            shap_values = explainer(input_df)
+            # shap_values.values shape may be (1, n_features) or other; handle robustly
+            try:
+                vals = np.array(shap_values.values).reshape(-1)[:len(feature_columns)]
+            except Exception:
+                # fallback: zero array
+                vals = np.zeros(len(feature_columns))
+            sh_df = pd.DataFrame({"Feature": feature_columns, "SHAP": vals})
+            st.table(sh_df)
         except Exception as e:
             st.info(f"SHAP not available: {e}")
-
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # -------------------------
-    # AI Explanation (Gemini)
-    # -------------------------
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader(T("AI Explanation","AI स्पष्टीकरण","AI स्पष्टीकरण"))
-
-    ai_text = gemini_explain(feats, prob, risk_pct, risk_cat)
+    # ---------------------------
+    # AI Explanation (Gemini safe + fallback)
+    # ---------------------------
+    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+    st.subheader("AI Explanation")
+    ai_text = generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang)
     st.write(ai_text)
-
     st.markdown("</div>", unsafe_allow_html=True)
+
+# small spacer
+st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
