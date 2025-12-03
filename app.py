@@ -1,7 +1,3 @@
-# app.py — Final premium app with level-specific AI explanations + multi-language
-# Requirements: streamlit, numpy, pandas, opencv-python-headless (or opencv-python), joblib, scipy, scikit-learn, plotly (optional), shap (optional)
-# Place optional logo at assets/logo.png. Place trained models in models/ if available.
-
 import os
 import time
 import tempfile
@@ -365,8 +361,7 @@ with st.sidebar:
     show_shap = st.checkbox("Show SHAP explainability", True)
     language = st.selectbox("Language", ["English","Hindi","Marathi"])
     st.markdown("---")
-    st.markdown("<div class='muted'>Models loaded:</div>", unsafe_allow_html=True)
-    st.write(f"mlp: {'yes' if mlp is not None else 'no'}, rf: {'yes' if rf is not None else 'no'}, xgb: {'yes' if xgb is not None else 'no'}, stacker: {'yes' if stacker is not None else 'no'}")
+    
 
 # main card inputs
 left, right = st.columns([1,1.4])
@@ -524,29 +519,72 @@ if 'features' in locals() and features is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    # SHAP contributions (safe)
-    if show_shap:
-        st.markdown("<div class='card' style='margin-top:14px'>", unsafe_allow_html=True)
-        st.subheader("SHAP contributions")
+# ---------------------------  
+# SHAP Explainability (Final Working Version)
+# ---------------------------  
+if show_shap and shap is not None and (rf is not None or xgb is not None or mlp is not None):
+    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+    st.subheader("SHAP contributions")
+
+    try:
+        # pick best model for SHAP
+        model_for_shap = rf or xgb or mlp or stacker
+
+        # build small background data
         try:
-            if shap is None:
-                st.info("SHAP not installed. Install shap to enable feature contributions.")
+            if scaler is not None and hasattr(scaler, "mean_"):
+                means = scaler.mean_
+                X_bg = np.tile(means.reshape(1, -1), (20, 1))
             else:
-                model_for_shap = rf or mlp or xgb or stacker
-                if model_for_shap is None:
-                    st.info("No suitable model for SHAP explainability is available.")
-                else:
-                    # create DataFrame single row with same-length numeric values
-                    X_df = pd.DataFrame([vectorize_features(feats).ravel()], columns=FEATURE_ORDER)
-                    explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(X_df))
-                    shap_vals = explainer(X_df)
-                    # shap_vals.values shape may be (1,n) or (1,1,n) depending on model; normalize accordingly
-                    vals = np.array(shap_vals.values).reshape(-1)[:len(FEATURE_ORDER)]
-                    sh_df = pd.DataFrame({"Feature": FEATURE_ORDER, "SHAP": np.round(vals, 4)})
-                    st.table(sh_df)
-        except Exception as e:
-            st.info(f"SHAP not available: {e}")
-        st.markdown("</div>", unsafe_allow_html=True)
+                # fallback: noisy version of current features
+                base = vectorize_features(feats).reshape(-1)
+                X_bg = np.vstack([base + np.random.normal(scale=0.01, size=base.shape) for _ in range(20)])
+        except:
+            base = vectorize_features(feats).reshape(-1)
+            X_bg = np.vstack([base + np.random.normal(scale=0.01, size=base.shape) for _ in range(20)])
+
+        # scale if scaler exists
+        try:
+            X_for_shap = scaler.transform(vectorize_features(feats)) if scaler is not None else vectorize_features(feats)
+            X_bg_for_shap = scaler.transform(X_bg) if scaler is not None else X_bg
+        except:
+            X_for_shap = vectorize_features(feats)
+            X_bg_for_shap = X_bg
+
+        # choose explainer
+        if hasattr(shap, "TreeExplainer") and (rf is not None or xgb is not None):
+            explainer = shap.TreeExplainer(model_for_shap, data=X_bg_for_shap, feature_perturbation="interventional")
+
+            try:
+                shap_values = explainer.shap_values(X_for_shap)
+            except:
+                shap_values = explainer(X_for_shap).values
+        else:
+            explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(X_bg_for_shap))
+            out = explainer(X_for_shap)
+            shap_values = out.values
+
+        # extract class-1 SHAP values properly
+        if isinstance(shap_values, list):  
+            svals = np.array(shap_values[1]).reshape(-1)[:len(FEATURE_ORDER)]
+        else:
+            arr = np.array(shap_values)
+            if arr.ndim == 3:  
+                svals = arr[1].reshape(-1)[:len(FEATURE_ORDER)]
+            else:
+                svals = arr.reshape(-1)[:len(FEATURE_ORDER)]
+
+        # show table
+        sh_df = pd.DataFrame({
+            "Feature": FEATURE_ORDER,
+            "SHAP": np.round(svals.astype(float), 4)
+        })
+        st.table(sh_df)
+
+    except Exception as e:
+        st.info(f"SHAP not available: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # AI Explanation (local templates)
     st.markdown("<div class='card' style='margin-top:14px'>", unsafe_allow_html=True)
