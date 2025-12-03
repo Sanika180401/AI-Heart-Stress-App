@@ -114,26 +114,53 @@ rf = load_model_safe("rf.pkl")
 xgb = load_model_safe("xgb.pkl")
 
 # ---------------------------
-# OpenAI client (hidden key)
+# Gemini Free API (AI Explanation)
 # ---------------------------
-def get_openai_client():
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        keyfile = os.path.join(ROOT, "openai_key.txt")
-        if os.path.exists(keyfile):
-            try:
-                with open(keyfile, "r", encoding="utf-8") as f:
-                    key = f.read().strip()
-            except Exception:
-                key = None
-    if key and OpenAI is not None:
-        try:
-            return OpenAI(api_key=key)
-        except Exception:
-            return None
-    return None
+import google.generativeai as genai
 
-openai_client = get_openai_client()
+def get_gemini_client():
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        keyfile = os.path.join(ROOT, "gemini_key.txt")
+        if os.path.exists(keyfile):
+            with open(keyfile, "r") as f:
+                key = f.read().strip()
+    if not key:
+        return None
+    try:
+        genai.configure(api_key=key)
+        return genai.GenerativeModel("gemini-1.5-flash")
+    except:
+        return None
+
+gem_client = get_gemini_client()
+
+def call_gpt(feats, prob, risk_pct, risk_cat, lang="English"):
+    if gem_client is None:
+        return "Gemini AI unavailable — API key missing."
+
+    prompt = f"""
+You are a concise medical assistant.
+
+Language: {lang}
+
+HRV: {feats}
+Stress Probability: {prob:.2f}
+Estimated heart attack risk: {risk_pct:.0f}% ({risk_cat})
+
+Provide:
+1. One-line health explanation
+2. Three recommendations: immediate, today, long-term
+3. One-line: when to seek medical care
+
+Respond ONLY in {lang}.
+"""
+
+    try:
+        resp = gem_client.generate_content(prompt)
+        return resp.text
+    except Exception as e:
+        return f"Gemini AI Error: {e}"
 
 # ---------------------------
 # rPPG helpers (compact)
@@ -274,7 +301,7 @@ def heart_attack_risk_heuristic(prob, mean_hr):
     return risk_pct, cat
 
 # GPT helper (robust)
-def call_gpt(feats, prob, risk_pct, risk_cat):
+def call_gpt(feats, prob, risk_pct, risk_cat, lang):
     client = openai_client
     if client is None:
         return "AI assistant unavailable — no OpenAI key."
@@ -321,6 +348,7 @@ st.write("")
 # left sidebar controls
 with st.sidebar:
     st.header("Input & Settings")
+    lang = st.selectbox("Explanation Language", ["English", "Hindi", "Marathi"])
     method = st.radio("Choose method", ["Manual Entry","Upload Video","Upload Image","Webcam Image","Webcam Video"])
     max_seconds = st.slider("Max video seconds", 6, 20, 10)
     rec_seconds = st.slider("Webcam recording sec", 4, 12, 8)
@@ -513,7 +541,7 @@ if 'features' in locals() and features is not None:
     # GPT Explanation
     st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
     st.subheader("AI Explanation (GPT)")
-    gpt_out = call_gpt(feats, prob, risk_pct, risk_cat)
+    gpt_out = call_gpt(feats, prob, risk_pct, risk_cat, lang)
     st.write(gpt_out)
     st.markdown("</div>", unsafe_allow_html=True)
 
