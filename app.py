@@ -440,6 +440,26 @@ with right:
     trend_ph = st.empty()
     st.markdown('</div>', unsafe_allow_html=True)
 
+ # Colorful primary buttons
+.stButton > button {
+    background: linear-gradient(90deg, #ff4d6d, #ff7a59);
+    color: white !important;
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-weight: 600;
+    border: none;
+    transition: 0.2s;
+}
+.stButton > button:hover {
+    transform: scale(1.05);
+}
+
+/* Secondary blue-green buttons */
+.stButton.secondary > button {
+    background: linear-gradient(90deg, #06b6d4, #3b82f6);
+    color: white !important;
+}
+
 # ------------------ After prediction show results ------------------
 if features is not None:
     feats = {k: float(features.get(k, math.nan)) if features.get(k, None) is not None else float('nan') for k in FEATURE_ORDER}
@@ -497,48 +517,33 @@ if features is not None:
     elif wf is not None:
         st.line_chart(wf['sig'])
 
-    # SHAP contributions (fixed)
-    if show_shap and shap is not None and (rf is not None or xgb is not None or mlp is not None):
-        st.markdown('---')
-        st.subheader('SHAP contributions (approx)')
-        try:
-            model_for_shap = rf or xgb or mlp or stacker
-            # build background
-            if scaler is not None and hasattr(scaler, 'mean_'):
-                means = getattr(scaler, 'mean_')
-                X_bg = np.tile(means.reshape(1,-1), (20,1))
-            else:
-                base = vectorize_features(feats).reshape(-1)
-                X_bg = np.vstack([base + np.random.normal(scale=0.01, size=base.shape) for _ in range(20)])
-            try:
-                X_for_shap = scaler.transform(vectorize_features(feats)) if scaler is not None else vectorize_features(feats)
-                X_bg_for_shap = scaler.transform(X_bg) if scaler is not None else X_bg
-            except Exception:
-                X_for_shap = vectorize_features(feats)
-                X_bg_for_shap = X_bg
-            if hasattr(shap, 'TreeExplainer') and (rf is not None or xgb is not None):
-                explainer = shap.TreeExplainer(model_for_shap, data=X_bg_for_shap, feature_perturbation='interventional')
-                try:
-                    shap_values = explainer.shap_values(X_for_shap)
-                except Exception:
-                    shap_values = explainer(X_for_shap).values
-            else:
-                explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(X_bg_for_shap))
-                out = explainer(X_for_shap)
-                shap_values = out.values
-            # extract correctly
-            if isinstance(shap_values, list):
-                svals = np.array(shap_values[1]).reshape(-1)[:len(FEATURE_ORDER)]
-            else:
-                arr = np.array(shap_values)
-                if arr.ndim == 3:
-                    svals = arr[1].reshape(-1)[:len(FEATURE_ORDER)]
-                else:
-                    svals = arr.reshape(-1)[:len(FEATURE_ORDER)]
-            sh_df = pd.DataFrame({'Feature': FEATURE_ORDER, 'SHAP': np.round(svals.astype(float), 4)})
-            st.table(sh_df)
-        except Exception as e:
-            st.info(f'SHAP not available: {e}')
+# ----------SHAP Explainability (Fixed for MLP / single-output models)----------
+if show_shap and shap is not None and (mlp is not None):
+    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+    st.subheader("SHAP Contributions")
+
+    try:
+        # Background dataset = mean vector (prevents dimension errors)
+        background = np.zeros((20, len(FEATURE_ORDER)))
+        explainer = shap.Explainer(mlp, background)
+
+        sample = vectorize_features(feats)
+        shap_values = explainer(sample)
+
+        # MLP gives shap.values shape: (1, num_features)
+        shap_vals = shap_values.values[0]
+
+        sh_df = pd.DataFrame({
+            "Feature": FEATURE_ORDER,
+            "SHAP Value": shap_vals
+        })
+
+        st.table(sh_df)
+
+    except Exception as e:
+        st.info(f"SHAP not available: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # AI explanation (level-specific)
     st.markdown('---')
