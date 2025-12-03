@@ -57,8 +57,11 @@ def safe_load_joblib(path):
     try:
         return load(path)
     except Exception as e:
-        st.debug = getattr(st, "debug", lambda *a, **k: None)
-        st.debug(f"Model load failed {path}: {e}")
+        # don't crash on model load issues; show minimal debug
+        try:
+            st.debug(f"Model load failed {path}: {e}")
+        except Exception:
+            pass
         return None
 
 def ensure_users_file():
@@ -324,7 +327,6 @@ def compute_shap_table(feats:dict):
             model_for_shap = rf
             explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(np.zeros((1, len(FEATURE_ORDER)))))
             svals = explainer(X)
-            # svals.values shape (1, n_features) usually
             vals = np.array(svals.values).reshape(-1)[:len(FEATURE_ORDER)]
         elif xgb is not None:
             model_for_shap = xgb
@@ -333,7 +335,7 @@ def compute_shap_table(feats:dict):
             vals = np.array(svals.values).reshape(-1)[:len(FEATURE_ORDER)]
         elif mlp is not None:
             # For MLP (single-output), KernelExplainer may be used but heavy.
-            # We'll use Tree SHAP style fallback using small synthetic background.
+            # We'll use KernelExplainer fallback with small background.
             try:
                 background = np.zeros((10, len(FEATURE_ORDER)))
                 explainer = shap.KernelExplainer(lambda z: np.array(mlp.predict_proba(z)[:,1]) , background)
@@ -516,6 +518,9 @@ def login_widget():
                 st.sidebar.success("Account created successfully!")
                 st.session_state["register_mode"] = False
 
+# Ensure login widget shows on sidebar
+login_widget()
+
 # ---------------------------
 # UI layout - header
 # ---------------------------
@@ -662,6 +667,9 @@ with right_col:
 
     dash_col1, dash_col2, dash_col3 = st.columns(3)
 
+    # create a persistent placeholder for the main gauge so we can update it later
+    gauge_ph = st.empty()
+
     # --------- HR Circular Gauge (Plotly) ----------
     with dash_col1:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
@@ -730,12 +738,13 @@ if features is not None:
     risk_pct, risk_cat = heart_attack_risk_heuristic(prob, feats.get("mean_hr", 0.0))
     sentence = f"Predicted HR ≈ {feats.get('mean_hr', math.nan):.0f} bpm | Stress: {stress_label} ({prob:.2f}) | Heart-attack est: {risk_pct:.0f}% ({risk_cat})"
 
-    # Gauge
+    # Gauge (update via placeholder)
     if go is not None:
         fig = go.Figure(go.Indicator(mode="gauge+number", value=feats.get("mean_hr", 60),
                                     gauge={'axis':{'range':[30,180]}, 'bar':{'color':'#ff4d6d'} },
                                     title={'text': "<b>Heart Rate (bpm)</b>"}))
         fig.update_layout(height=280, margin=dict(t=20,b=0,l=0,r=0), paper_bgcolor="white", font_color="#0b1721")
+        # use the placeholder created earlier
         gauge_ph.plotly_chart(fig, use_container_width=True)
     else:
         gauge_ph.info(f"Heart Rate: {feats.get('mean_hr', math.nan):.0f} bpm")
