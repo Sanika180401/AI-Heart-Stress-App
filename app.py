@@ -523,31 +523,42 @@ if features is not None:
         </div>
         """, unsafe_allow_html=True)
 
-    # ---------------------------
-    # SHAP explainability (fixed shape)
-    # ---------------------------
-    if show_shap and shap is not None and (rf is not None or mlp is not None or xgb is not None):
-        st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
-        st.subheader("SHAP contributions")
-        try:
-            # Build a DataFrame with the exact feature order and one row
-            feature_columns = FEATURE_ORDER.copy()
-            input_df = pd.DataFrame([[feats.get(c, np.nan) for c in feature_columns]], columns=feature_columns)
-            # choose a model for SHAP
-            model_for_shap = rf or mlp or xgb or stacker
-            explainer = shap.Explainer(model_for_shap, masker=shap.maskers.Independent(input_df))
-            shap_values = explainer(input_df)
-            # shap_values.values shape may be (1, n_features) or other; handle robustly
-            try:
-                vals = np.array(shap_values.values).reshape(-1)[:len(feature_columns)]
-            except Exception:
-                # fallback: zero array
-                vals = np.zeros(len(feature_columns))
-            sh_df = pd.DataFrame({"Feature": feature_columns, "SHAP": vals})
-            st.table(sh_df)
-        except Exception as e:
-            st.info(f"SHAP not available: {e}")
-        st.markdown("</div>", unsafe_allow_html=True)
+# ---------------------------
+# SHAP explainability (improved)
+# ---------------------------
+if show_shap and shap is not None and rf is not None:
+    st.markdown("<div class='card' style='margin-top:12px'>", unsafe_allow_html=True)
+    st.subheader("SHAP contributions")
+
+    try:
+        # 1) Replace NaN with safe median defaults
+        safe_feats = {k: (feats[k] if not np.isnan(feats[k]) else 0.0) for k in FEATURE_ORDER}
+
+        # 2) Create proper dataframe
+        feature_columns = FEATURE_ORDER.copy()
+        input_df = pd.DataFrame([[safe_feats[c] for c in feature_columns]], columns=feature_columns)
+
+        # 3) KernelExplainer (works on ANY classifier)
+        background = np.zeros((1, len(feature_columns)))
+        explainer = shap.KernelExplainer(lambda X: rf.predict_proba(X)[:,1], background)
+
+        shap_values = explainer.shap_values(input_df)
+
+        # 4) SHAP vector
+        vals = shap_values.reshape(-1)
+
+        # 5) Display table
+        sh_df = pd.DataFrame({
+            "Feature": feature_columns,
+            "SHAP": vals.round(4)
+        })
+
+        st.table(sh_df)
+
+    except Exception as e:
+        st.info(f"SHAP not available: {e}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # ---------------------------
     # AI Explanation (Gemini safe + fallback)
