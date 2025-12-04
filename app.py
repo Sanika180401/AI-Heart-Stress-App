@@ -687,28 +687,91 @@ if features is not None:
     except Exception:
         pass
 
-# ---------- Weekly Trend Dashboard ----------
+# ---------- Weekly Trend Dashboard (robust timestamp parsing) ----------
+def parse_time_safely(t):
+    """Return a datetime or None - accepts iso strings, other strings, numeric epoch, or None."""
+    if t is None:
+        return None
+    # if already datetime
+    if isinstance(t, datetime.datetime):
+        return t
+    # numeric epoch
+    if isinstance(t, (int, float, np.integer, np.floating)):
+        try:
+            return datetime.datetime.fromtimestamp(float(t))
+        except Exception:
+            return None
+    # string inputs
+    if isinstance(t, str):
+        # try isoformat first
+        for fmt in (None, "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                if fmt is None:
+                    # try fromisoformat which accepts extended ISO
+                    return datetime.datetime.fromisoformat(t)
+                else:
+                    return datetime.datetime.strptime(t, fmt)
+            except Exception:
+                continue
+    return None
+
 def compute_weekly_stats():
     data = load_history()
     if not data:
         return None
-    # consider entries in last 7 days
     now = datetime.datetime.now()
     week_ago = now - datetime.timedelta(days=7)
-    recent = [d for d in data if "time" in d and datetime.datetime.fromisoformat(d["time"]) >= week_ago]
-    if not recent:
-        recent = data[-20:]  # fallback to recent
-    hrs = [d["hr"] for d in recent if d.get("hr") is not None]
-    probs = [d["stress_prob"] for d in recent if d.get("stress_prob") is not None]
-    if len(hrs)==0 and len(probs)==0:
+
+    valid_recent = []
+    # accept entries that have either "time" or "timestamp" or "date"
+    for d in data:
+        tval = None
+        if isinstance(d, dict):
+            if "time" in d:
+                tval = d.get("time")
+            elif "timestamp" in d:
+                tval = d.get("timestamp")
+            elif "date" in d:
+                tval = d.get("date")
+        # try to parse
+        dt = parse_time_safely(tval)
+        if dt is not None and dt >= week_ago:
+            valid_recent.append(d)
+    # fallback: if no 7-day records, use the last N entries
+    if not valid_recent:
+        # pick last 20 numeric entries (if any)
+        if isinstance(data, list) and len(data) > 0:
+            valid_recent = data[-20:]
+        else:
+            valid_recent = []
+
+    # extract hr and stress
+    hrs = []
+    probs = []
+    for d in valid_recent:
+        try:
+            if isinstance(d, dict):
+                if d.get("hr") is not None:
+                    hrs.append(float(d.get("hr")))
+                elif d.get("heart_rate") is not None:
+                    hrs.append(float(d.get("heart_rate")))
+                if d.get("stress_prob") is not None:
+                    probs.append(float(d.get("stress_prob")))
+                elif d.get("stress") is not None:
+                    probs.append(float(d.get("stress")))
+        except Exception:
+            continue
+
+    if len(hrs) == 0 and len(probs) == 0:
         return None
+
     stats = {
-        "avg_hr": float(np.mean(hrs)) if len(hrs)>0 else None,
-        "avg_stress": float(np.mean(probs)) if len(probs)>0 else None,
-        "min_hr": float(np.min(hrs)) if len(hrs)>0 else None,
-        "max_hr": float(np.max(hrs)) if len(hrs)>0 else None,
-        "count": len(recent),
-        "recent": recent
+        "avg_hr": float(np.mean(hrs)) if len(hrs) > 0 else None,
+        "avg_stress": float(np.mean(probs)) if len(probs) > 0 else None,
+        "min_hr": float(np.min(hrs)) if len(hrs) > 0 else None,
+        "max_hr": float(np.max(hrs)) if len(hrs) > 0 else None,
+        "count": len(valid_recent),
+        "recent": valid_recent
     }
     return stats
 
@@ -794,8 +857,85 @@ def compute_doctor_metrics(feats):
     heart_age = int(min(90, max(18, heart_age)))
     return {"sdnn": sdnn, "lf_hf": lf_hf, "heart_age": heart_age}
 
+# ---------- Frequency-domain plotting (uses RR if available, or synthesizes RR from mean/std) ----------
 def plot_frequency_domain(feats):
-    return None
+    """
+    Try to plot PSD (LF/HF) from RR series or synthesized RR.
+    Returns path to PNG image if created, otherwise None.
+    """
+    if plt is None:
+        return None
+
+    try:
+        # If user provided an explicit rr_series in features (list/array), use it
+        rr_series = None
+        if isinstance(feats, dict):
+            # look for raw rr arrays in keys
+            for k in ("rr_series", "rr_ms", "rr_list", "rr_values"):
+                if k in feats and feats[k] is not None:
+                    arr = feats[k]
+                    try:
+                        rr_series = np.array(arr, dtype=float)
+                        break
+                    except Exception:
+                        rr_series = None
+            # otherwise check for rr_mean & rr_std and synthesize
+            if rr_series is None and feats.get("rr_mean") is not None and feats.get("rr_std") is not None:
+                try:
+                    mu = float(feats.get("rr_mean"))
+                    sigma = float(feats.get("rr_std"))
+                    if math.isnan(mu) or mu <= 0:
+                        rr_series = None
+                    else:
+                        # synthesize ~200 beats around mean with clamp
+                        n = 256
+                        rng = np.random.default_rng(seed=42)
+                        rr_series = rng.normal(loc=mu, scale=max(1.0, sigma if not math.isnan(sigma) else 5.0), size=n)
+                        rr_series = np.clip(rr_series, 300.0, 2000.0)  # ms bounds
+                except Exception:
+                    rr_series = None
+
+        if rr_series is None or len(rr_series) < 4:
+            return None
+
+        # convert rr_ms to instantaneous heart rate series (bpm)
+        inst_hr = 60000.0 / rr_series
+        # resample/interpolate to uniform time grid if needed
+        fs_interp = 4.0
+        try:
+            times = np.cumsum(rr_series) / 1000.0
+            t_interp = np.arange(0, times[-1], 1.0/fs_interp)
+            # build beat_times and inst_hr_samples
+            beat_times = times[:-1] if len(times) > 1 else times
+            inst_hr_samples = inst_hr[:len(beat_times)]
+            if len(beat_times) >= 2:
+                interp = np.interp(t_interp, beat_times, inst_hr_samples)
+            else:
+                interp = inst_hr
+        except Exception:
+            interp = inst_hr
+
+        # PSD
+        f, pxx = welch(detrend(interp), fs=fs_interp, nperseg=min(256, len(interp)))
+        # plot
+        fig, ax = plt.subplots(figsize=(6,3))
+        ax.semilogy(f, pxx, linewidth=1.2)
+        ax.set_xlim(0, 0.6)
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Power")
+        ax.set_title("Frequency domain (PSD) — LF/HF view")
+        # mark LF and HF bands
+        ax.axvspan(0.04, 0.15, alpha=0.12, color='orange', label='LF (0.04-0.15)')
+        ax.axvspan(0.15, 0.4, alpha=0.08, color='green', label='HF (0.15-0.40)')
+        ax.legend(loc='upper right')
+        plt.tight_layout()
+
+        out_img = ROOT / "tmp_freq.png"
+        fig.savefig(str(out_img), dpi=150)
+        plt.close(fig)
+        return out_img
+    except Exception:
+        return None
 
 # ---------- Premium Home Screen ----------
 def premium_home_view(latest_entry=None, waveform=None, lang="English"):
