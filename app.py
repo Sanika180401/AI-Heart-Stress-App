@@ -1,8 +1,13 @@
+# final app.py — AI Heart Rate & Stress Analyzer (robust, premium UI + panels)
+# Replace your existing app.py with this file.
+# Requirements (some optional): streamlit, opencv-python, numpy, pandas, joblib, scipy, plotly, shap (optional), fpdf (optional), matplotlib (optional)
+
 import os
 import tempfile
 import time
 import math
 import json
+import datetime
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -97,6 +102,8 @@ st.markdown("""
 # ---------------------------
 def safe_load_joblib(path):
     try:
+        if not Path(path).exists():
+            return None
         return load(path)
     except Exception:
         return None
@@ -284,6 +291,7 @@ def compute_shap_table(feats):
         elif mlp is not None:
             # KernelExplainer fallback for MLP (single-output)
             try:
+                # background of zeros (fast, not ideal but works)
                 background = np.zeros((10, len(FEATURE_ORDER)))
                 explainer = shap.KernelExplainer(lambda z: np.array(mlp.predict_proba(z)[:,1]) , background)
                 svals = explainer.shap_values(X, nsamples=64)
@@ -372,6 +380,11 @@ def generate_ai_explanation(feats, prob, risk_pct, risk_cat, lang="English"):
 # ---------------------------
 # UI layout
 # ---------------------------
+
+# Ensure waveform and features exist globally (avoid reference errors)
+waveform = None
+features = None
+
 col_logo, col_title = st.columns([0.8, 6])
 with col_logo:
     if LOGO_PATH.exists():
@@ -399,9 +412,7 @@ left, right = st.columns([1, 1.4])
 with left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("Input")
-    features = None
-    waveform = None
-
+    # local features/waveform will (re)assign global 'features' and 'waveform'
     if method == "Manual Entry":
         vals = {}
         cols = st.columns(2)
@@ -517,8 +528,9 @@ with right:
 # ---------------------------
 # After prediction: show results
 # ---------------------------
-if 'features' in locals() and features is not None:
-    feats = {k: float(features.get(k, np.nan)) for k in FEATURE_ORDER}
+if features is not None:
+    # ensure numeric floats for features dict
+    feats = {k: float(features.get(k, np.nan)) if features.get(k, None) is not None else float("nan") for k in FEATURE_ORDER}
     prob, parts = predict_ensemble(feats)
     stress_label = categorize_stress(prob)
     hr_label = categorize_hr(feats.get("mean_hr", 0.0))
@@ -598,14 +610,9 @@ if 'features' in locals() and features is not None:
 
 # ============================
 # EXTENSION: Weekly Trend, PDF report, Live Waveform, Doctor Mode, Premium Home
-# Append this block to the END of your existing app.py (copy-paste as-is).
 # ============================
 
-import datetime
-import json
-from pathlib import Path
-
-# optional libs for PDF & plots
+# Optional libs for PDF & plots
 try:
     from fpdf import FPDF
 except Exception:
@@ -617,7 +624,9 @@ except Exception:
     plt = None
 
 HISTORY_FILE = ROOT / "history.json"
-HISTORY_FILE = Path(HISTORY_FILE)
+# If history.json is accidentally a directory, use fallback file inside it
+if HISTORY_FILE.exists() and HISTORY_FILE.is_dir():
+    HISTORY_FILE = HISTORY_FILE / "history.json"
 
 def load_history():
     if not HISTORY_FILE.exists():
@@ -627,25 +636,52 @@ def load_history():
     except Exception:
         return []
 
+def sanitize_for_json(obj):
+    # convert numpy types & nan -> None
+    if obj is None:
+        return None
+    if isinstance(obj, (np.floating, float)):
+        if math.isnan(float(obj)):
+            return None
+        return float(obj)
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    try:
+        return float(obj)
+    except Exception:
+        return None
+
 def save_history_entry(entry):
     data = load_history()
-    data.append(entry)
+    # sanitize nested values
+    e = {}
+    for k,v in entry.items():
+        if isinstance(v, dict):
+            e[k] = {kk: sanitize_for_json(vv) for kk,vv in v.items()}
+        else:
+            e[k] = sanitize_for_json(v)
+    data.append(e)
     try:
         HISTORY_FILE.write_text(json.dumps(data, indent=2))
     except Exception:
-        pass
+        # try to create parent dir and retry
+        try:
+            HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            HISTORY_FILE.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
 
 # If we have current features from this run, save a history record automatically
-if 'features' in locals() and features is not None:
+if features is not None:
     try:
         now = datetime.datetime.now().isoformat()
-        hr_val = float(features.get("mean_hr", math.nan))
-        prob_val, _ = predict_ensemble({k: float(features.get(k, np.nan)) for k in FEATURE_ORDER})
+        hr_val = features.get("mean_hr", None)
+        prob_val, _ = predict_ensemble({k: float(features.get(k, math.nan)) if features.get(k, None) is not None else math.nan for k in FEATURE_ORDER})
         entry = {
             "time": now,
-            "hr": float(hr_val) if not math.isnan(hr_val) else None,
+            "hr": float(hr_val) if (hr_val is not None and not math.isnan(float(hr_val))) else None,
             "stress_prob": float(prob_val),
-            "features": {k: float(features.get(k, np.nan)) if not (features.get(k, np.nan) is None or str(features.get(k, np.nan))=="nan") else None for k in FEATURE_ORDER}
+            "features": {k: sanitize_for_json(features.get(k, None)) for k in FEATURE_ORDER}
         }
         save_history_entry(entry)
     except Exception:
@@ -659,7 +695,7 @@ def compute_weekly_stats():
     # consider entries in last 7 days
     now = datetime.datetime.now()
     week_ago = now - datetime.timedelta(days=7)
-    recent = [d for d in data if datetime.datetime.fromisoformat(d["time"]) >= week_ago]
+    recent = [d for d in data if "time" in d and datetime.datetime.fromisoformat(d["time"]) >= week_ago]
     if not recent:
         recent = data[-20:]  # fallback to recent
     hrs = [d["hr"] for d in recent if d.get("hr") is not None]
@@ -678,14 +714,8 @@ def compute_weekly_stats():
 
 # ---------- PDF Report Generation ----------
 def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="English"):
-    """
-    Create a simple PDF with summary + charts (if matplotlib available).
-    entry: dict with hr, stress_prob, features
-    waveform: list/array to plot
-    """
     if FPDF is None:
         return None, "FPDF not installed. Install via `pip install fpdf` to enable PDF reports."
-
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
@@ -694,7 +724,6 @@ def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="
     pdf.ln(4)
     pdf.set_font("Arial", size=11)
     pdf.set_text_color(0,0,0)
-
     if entry is None:
         pdf.cell(0, 8, "No data available to create report.", ln=True)
     else:
@@ -709,8 +738,6 @@ def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="
             label = "Low" if sp<0.33 else "Moderate" if sp<0.66 else "High"
             pdf.cell(0, 8, f"Stress Level: {label}", ln=True)
         pdf.ln(6)
-
-        # AI explanation
         ai_text = generate_ai_explanation(entry.get("features", {}), sp if sp is not None else 0.0, 0, "Low", lang=lang)
         pdf.multi_cell(0, 6, "AI Explanation:")
         pdf.set_font("Arial", size=10)
@@ -718,16 +745,11 @@ def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="
             pdf.multi_cell(0, 5, line)
         pdf.set_font("Arial", size=11)
         pdf.ln(6)
-
-        # waveform plot
-        img_temp = None
         if waveform is not None and plt is not None:
             try:
                 fig, ax = plt.subplots(figsize=(6,2))
                 ax.plot(waveform, linewidth=1)
                 ax.set_title("HRV Waveform (preview)")
-                ax.set_xlabel("Frame")
-                ax.set_ylabel("Signal")
                 plt.tight_layout()
                 img_temp = ROOT / "tmp_waveform.png"
                 fig.savefig(str(img_temp), dpi=150)
@@ -735,10 +757,8 @@ def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="
                 pdf.image(str(img_temp), w=180)
                 try: img_temp.unlink()
                 except: pass
-            except Exception as e:
+            except Exception:
                 pass
-
-    # save pdf
     out_path = ROOT / filename
     try:
         pdf.output(str(out_path))
@@ -748,22 +768,15 @@ def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="
 
 # ---------- Live HRV Waveform Animation ----------
 def play_live_waveform(wave, speed=0.03):
-    """
-    Displays a simple streaming-like waveform by gradually adding points.
-    Use only for short wave arrays (<= 2000).
-    """
     if wave is None:
         st.info("No waveform available for live animation.")
         return
     if len(wave) > 5000:
         wave = wave[-2000:]
-
     placeholder = st.empty()
     df = pd.DataFrame({"signal": []})
     chart = placeholder.line_chart(df)
-    chunk = []
     for i, v in enumerate(wave):
-        chunk.append([v])
         if i % 4 == 0:
             chart.add_rows(pd.DataFrame({"signal": [v]}))
         time.sleep(speed)
@@ -771,51 +784,29 @@ def play_live_waveform(wave, speed=0.03):
 
 # ---------- Doctor Mode computations ----------
 def compute_doctor_metrics(feats):
-    """
-    Returns SDNN, LF/HF (if available), heart-age estimate
-    SDNN: standard deviation of RR intervals (ms)
-    Heart-age: heuristic
-    """
-    # try to reconstruct rr_ms from rr_mean & rr_std if raw not available
     rr_mean = feats.get("rr_mean", None)
     rr_std = feats.get("rr_std", None)
     sdnn = rr_std if rr_std is not None else None
     lf_hf = feats.get("lf_hf", None)
-
     mean_hr = feats.get("mean_hr", 70)
-    # heart-age heuristic: base 20 + hr contribution + stress contribution
     prob, _ = predict_ensemble(feats)
     heart_age = 20 + max(0, (mean_hr - 60) * 0.4) + prob * 15
     heart_age = int(min(90, max(18, heart_age)))
-
     return {"sdnn": sdnn, "lf_hf": lf_hf, "heart_age": heart_age}
 
 def plot_frequency_domain(feats):
-    """
-    Plot PSD from interpolated RR if possible. Returns path to PNG if plotted.
-    """
-    if plt is None:
-        return None
-    try:
-        rr_ms = feats.get("rr_mean", None)
-        rr_std = feats.get("rr_std", None)
-        # not enough raw data => cannot compute PSD; return None
-        return None
-    except Exception:
-        return None
+    return None
 
 # ---------- Premium Home Screen ----------
 def premium_home_view(latest_entry=None, waveform=None, lang="English"):
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.markdown("<h2 style='color:#c41b23; margin-bottom:6px;'>Premium Dashboard</h2>", unsafe_allow_html=True)
-    # Big animated heart (CSS + emoji)
     st.markdown("""
     <div style="text-align:center;">
       <div style="font-size:120px; line-height:0.8;">❤️</div>
       <div class="muted">AI-Based Heart Rate & Stress Assistant</div>
     </div>
     """, unsafe_allow_html=True)
-
     if latest_entry:
         hr = latest_entry.get("hr", None)
         sp = latest_entry.get("stress_prob", None)
@@ -826,27 +817,23 @@ def premium_home_view(latest_entry=None, waveform=None, lang="English"):
             st.metric("Latest Stress", f"{int(sp*100)}% ({label})")
     else:
         st.info("Run an analysis to populate live preview.")
-
-    # quick access icons (buttons)
     col1, col2, col3, col4 = st.columns(4)
     if col1.button("Weekly Trend"):
-        st.session_state["_show_panel"] = "trend"
+        st.session_state["_show_panel"] = "Weekly Trend"
     if col2.button("Generate Report"):
-        st.session_state["_show_panel"] = "report"
+        st.session_state["_show_panel"] = "Generate PDF Report"
     if col3.button("Live Waveform"):
-        st.session_state["_show_panel"] = "wave"
+        st.session_state["_show_panel"] = "Live Waveform"
     if col4.button("Doctor Mode"):
-        st.session_state["_show_panel"] = "doctor"
-
+        st.session_state["_show_panel"] = "Doctor Mode"
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- UI: add new sidebar controls for new features ----------
+# ---------- Sidebar: additional tools ----------
 with st.sidebar:
     st.markdown("### Additional Tools")
     if 'panel' not in st.session_state:
         st.session_state['panel'] = None
     panel = st.selectbox("Open panel", ["None","Premium Home","Weekly Trend","Generate PDF Report","Live Waveform","Doctor Mode"], index=0)
-    # quick-action flag that our UI below will respond to
     st.session_state['_show_panel'] = panel if panel != "None" else st.session_state.get('_show_panel', None)
 
 # Determine latest entry
@@ -869,7 +856,6 @@ elif panel == "Weekly Trend":
         st.metric("Avg Stress (7d)", f"{int(stats['avg_stress']*100)}%" if stats['avg_stress'] else "N/A")
         st.metric("Min HR", f"{stats['min_hr']:.0f} bpm" if stats['min_hr'] else "N/A")
         st.metric("Max HR", f"{stats['max_hr']:.0f} bpm" if stats['max_hr'] else "N/A")
-        # bar graph of stress over recent entries
         recent = stats['recent']
         df = pd.DataFrame(recent)
         df['time'] = pd.to_datetime(df['time'])
@@ -905,7 +891,7 @@ elif panel == "Live Waveform":
 
 elif panel == "Doctor Mode":
     st.header("Doctor Mode — Advanced Metrics")
-    if 'features' not in locals() or features is None:
+    if features is None:
         st.info("No features available. Run prediction (video/webcam/manual) to compute advanced metrics.")
     else:
         docs = compute_doctor_metrics({k: float(features.get(k, np.nan)) for k in FEATURE_ORDER})
@@ -923,4 +909,4 @@ elif panel == "Doctor Mode":
 if panel == "None" and '_show_panel' in st.session_state:
     st.session_state['_show_panel'] = None
 
-# End
+# end of app
