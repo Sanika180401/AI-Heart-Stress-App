@@ -596,4 +596,331 @@ if 'features' in locals() and features is not None:
     </div>
     """, unsafe_allow_html=True)
 
-# End of file
+# ============================
+# EXTENSION: Weekly Trend, PDF report, Live Waveform, Doctor Mode, Premium Home
+# Append this block to the END of your existing app.py (copy-paste as-is).
+# ============================
+
+import datetime
+import json
+from pathlib import Path
+
+# optional libs for PDF & plots
+try:
+    from fpdf import FPDF
+except Exception:
+    FPDF = None
+
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+
+HISTORY_FILE = ROOT / "history.json"
+HISTORY_FILE = Path(HISTORY_FILE)
+
+def load_history():
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        return json.loads(HISTORY_FILE.read_text())
+    except Exception:
+        return []
+
+def save_history_entry(entry):
+    data = load_history()
+    data.append(entry)
+    try:
+        HISTORY_FILE.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
+
+# If we have current features from this run, save a history record automatically
+if 'features' in locals() and features is not None:
+    try:
+        now = datetime.datetime.now().isoformat()
+        hr_val = float(features.get("mean_hr", math.nan))
+        prob_val, _ = predict_ensemble({k: float(features.get(k, np.nan)) for k in FEATURE_ORDER})
+        entry = {
+            "time": now,
+            "hr": float(hr_val) if not math.isnan(hr_val) else None,
+            "stress_prob": float(prob_val),
+            "features": {k: float(features.get(k, np.nan)) if not (features.get(k, np.nan) is None or str(features.get(k, np.nan))=="nan") else None for k in FEATURE_ORDER}
+        }
+        save_history_entry(entry)
+    except Exception:
+        pass
+
+# ---------- Weekly Trend Dashboard ----------
+def compute_weekly_stats():
+    data = load_history()
+    if not data:
+        return None
+    # consider entries in last 7 days
+    now = datetime.datetime.now()
+    week_ago = now - datetime.timedelta(days=7)
+    recent = [d for d in data if datetime.datetime.fromisoformat(d["time"]) >= week_ago]
+    if not recent:
+        recent = data[-20:]  # fallback to recent
+    hrs = [d["hr"] for d in recent if d.get("hr") is not None]
+    probs = [d["stress_prob"] for d in recent if d.get("stress_prob") is not None]
+    if len(hrs)==0 and len(probs)==0:
+        return None
+    stats = {
+        "avg_hr": float(np.mean(hrs)) if len(hrs)>0 else None,
+        "avg_stress": float(np.mean(probs)) if len(probs)>0 else None,
+        "min_hr": float(np.min(hrs)) if len(hrs)>0 else None,
+        "max_hr": float(np.max(hrs)) if len(hrs)>0 else None,
+        "count": len(recent),
+        "recent": recent
+    }
+    return stats
+
+# ---------- PDF Report Generation ----------
+def generate_pdf_report(filename="report.pdf", entry=None, waveform=None, lang="English"):
+    """
+    Create a simple PDF with summary + charts (if matplotlib available).
+    entry: dict with hr, stress_prob, features
+    waveform: list/array to plot
+    """
+    if FPDF is None:
+        return None, "FPDF not installed. Install via `pip install fpdf` to enable PDF reports."
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.set_text_color(196,27,35)
+    pdf.cell(0, 10, "AI Heart Rate & Stress Analysis Report", ln=True, align="C")
+    pdf.ln(4)
+    pdf.set_font("Arial", size=11)
+    pdf.set_text_color(0,0,0)
+
+    if entry is None:
+        pdf.cell(0, 8, "No data available to create report.", ln=True)
+    else:
+        t = entry.get("time", "")
+        pdf.cell(0, 8, f"Time: {t}", ln=True)
+        hr = entry.get("hr", None)
+        sp = entry.get("stress_prob", None)
+        if hr is not None:
+            pdf.cell(0, 8, f"Estimated Heart Rate: {hr:.1f} bpm", ln=True)
+        if sp is not None:
+            pdf.cell(0, 8, f"Stress Probability: {sp:.2f}", ln=True)
+            label = "Low" if sp<0.33 else "Moderate" if sp<0.66 else "High"
+            pdf.cell(0, 8, f"Stress Level: {label}", ln=True)
+        pdf.ln(6)
+
+        # AI explanation
+        ai_text = generate_ai_explanation(entry.get("features", {}), sp if sp is not None else 0.0, 0, "Low", lang=lang)
+        pdf.multi_cell(0, 6, "AI Explanation:")
+        pdf.set_font("Arial", size=10)
+        for line in ai_text.split("\n"):
+            pdf.multi_cell(0, 5, line)
+        pdf.set_font("Arial", size=11)
+        pdf.ln(6)
+
+        # waveform plot
+        img_temp = None
+        if waveform is not None and plt is not None:
+            try:
+                fig, ax = plt.subplots(figsize=(6,2))
+                ax.plot(waveform, linewidth=1)
+                ax.set_title("HRV Waveform (preview)")
+                ax.set_xlabel("Frame")
+                ax.set_ylabel("Signal")
+                plt.tight_layout()
+                img_temp = ROOT / "tmp_waveform.png"
+                fig.savefig(str(img_temp), dpi=150)
+                plt.close(fig)
+                pdf.image(str(img_temp), w=180)
+                try: img_temp.unlink()
+                except: pass
+            except Exception as e:
+                pass
+
+    # save pdf
+    out_path = ROOT / filename
+    try:
+        pdf.output(str(out_path))
+        return out_path, None
+    except Exception as e:
+        return None, f"PDF generation failed: {e}"
+
+# ---------- Live HRV Waveform Animation ----------
+def play_live_waveform(wave, speed=0.03):
+    """
+    Displays a simple streaming-like waveform by gradually adding points.
+    Use only for short wave arrays (<= 2000).
+    """
+    if wave is None:
+        st.info("No waveform available for live animation.")
+        return
+    if len(wave) > 5000:
+        wave = wave[-2000:]
+
+    placeholder = st.empty()
+    df = pd.DataFrame({"signal": []})
+    chart = placeholder.line_chart(df)
+    chunk = []
+    for i, v in enumerate(wave):
+        chunk.append([v])
+        if i % 4 == 0:
+            chart.add_rows(pd.DataFrame({"signal": [v]}))
+        time.sleep(speed)
+    st.success("Waveform playback finished.")
+
+# ---------- Doctor Mode computations ----------
+def compute_doctor_metrics(feats):
+    """
+    Returns SDNN, LF/HF (if available), heart-age estimate
+    SDNN: standard deviation of RR intervals (ms)
+    Heart-age: heuristic
+    """
+    # try to reconstruct rr_ms from rr_mean & rr_std if raw not available
+    rr_mean = feats.get("rr_mean", None)
+    rr_std = feats.get("rr_std", None)
+    sdnn = rr_std if rr_std is not None else None
+    lf_hf = feats.get("lf_hf", None)
+
+    mean_hr = feats.get("mean_hr", 70)
+    # heart-age heuristic: base 20 + hr contribution + stress contribution
+    prob, _ = predict_ensemble(feats)
+    heart_age = 20 + max(0, (mean_hr - 60) * 0.4) + prob * 15
+    heart_age = int(min(90, max(18, heart_age)))
+
+    return {"sdnn": sdnn, "lf_hf": lf_hf, "heart_age": heart_age}
+
+def plot_frequency_domain(feats):
+    """
+    Plot PSD from interpolated RR if possible. Returns path to PNG if plotted.
+    """
+    if plt is None:
+        return None
+    try:
+        rr_ms = feats.get("rr_mean", None)
+        rr_std = feats.get("rr_std", None)
+        # not enough raw data => cannot compute PSD; return None
+        return None
+    except Exception:
+        return None
+
+# ---------- Premium Home Screen ----------
+def premium_home_view(latest_entry=None, waveform=None, lang="English"):
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color:#c41b23; margin-bottom:6px;'>Premium Dashboard</h2>", unsafe_allow_html=True)
+    # Big animated heart (CSS + emoji)
+    st.markdown("""
+    <div style="text-align:center;">
+      <div style="font-size:120px; line-height:0.8;">❤️</div>
+      <div class="muted">AI-Based Heart Rate & Stress Assistant</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if latest_entry:
+        hr = latest_entry.get("hr", None)
+        sp = latest_entry.get("stress_prob", None)
+        if hr is not None:
+            st.metric("Latest Heart Rate", f"{hr:.0f} bpm")
+        if sp is not None:
+            label = "Low" if sp<0.33 else "Moderate" if sp<0.66 else "High"
+            st.metric("Latest Stress", f"{int(sp*100)}% ({label})")
+    else:
+        st.info("Run an analysis to populate live preview.")
+
+    # quick access icons (buttons)
+    col1, col2, col3, col4 = st.columns(4)
+    if col1.button("Weekly Trend"):
+        st.session_state["_show_panel"] = "trend"
+    if col2.button("Generate Report"):
+        st.session_state["_show_panel"] = "report"
+    if col3.button("Live Waveform"):
+        st.session_state["_show_panel"] = "wave"
+    if col4.button("Doctor Mode"):
+        st.session_state["_show_panel"] = "doctor"
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------- UI: add new sidebar controls for new features ----------
+with st.sidebar:
+    st.markdown("### Additional Tools")
+    if 'panel' not in st.session_state:
+        st.session_state['panel'] = None
+    panel = st.selectbox("Open panel", ["None","Premium Home","Weekly Trend","Generate PDF Report","Live Waveform","Doctor Mode"], index=0)
+    # quick-action flag that our UI below will respond to
+    st.session_state['_show_panel'] = panel if panel != "None" else st.session_state.get('_show_panel', None)
+
+# Determine latest entry
+history = load_history()
+latest = history[-1] if history else None
+
+# React to panel selection
+panel = st.session_state.get('_show_panel', None)
+
+if panel == "Premium Home":
+    premium_home_view(latest, waveform, lang=lang)
+
+elif panel == "Weekly Trend":
+    st.header("Weekly Trend Dashboard")
+    stats = compute_weekly_stats()
+    if stats is None:
+        st.info("No history available. Run at least one test to save history.")
+    else:
+        st.metric("Avg HR (7d)", f"{stats['avg_hr']:.1f} bpm" if stats['avg_hr'] else "N/A")
+        st.metric("Avg Stress (7d)", f"{int(stats['avg_stress']*100)}%" if stats['avg_stress'] else "N/A")
+        st.metric("Min HR", f"{stats['min_hr']:.0f} bpm" if stats['min_hr'] else "N/A")
+        st.metric("Max HR", f"{stats['max_hr']:.0f} bpm" if stats['max_hr'] else "N/A")
+        # bar graph of stress over recent entries
+        recent = stats['recent']
+        df = pd.DataFrame(recent)
+        df['time'] = pd.to_datetime(df['time'])
+        df = df.sort_values('time')
+        if not df.empty and 'stress_prob' in df.columns:
+            st.bar_chart(df.set_index('time')['stress_prob'].apply(lambda x: x*100))
+        else:
+            st.info("Not enough data to plot stress bar graph.")
+
+elif panel == "Generate PDF Report":
+    st.header("Generate PDF Report")
+    if latest is None:
+        st.info("No data to generate report. Run analysis first.")
+    else:
+        st.write("Latest entry will be used for the report.")
+        if st.button("Create PDF"):
+            out, err = generate_pdf_report(filename="report_latest.pdf", entry=latest, waveform=waveform, lang=lang)
+            if err:
+                st.error(err)
+            else:
+                st.success(f"Report saved: {out}")
+                with open(out, "rb") as f:
+                    st.download_button("Download PDF", f.read(), file_name=out.name, mime="application/pdf")
+
+elif panel == "Live Waveform":
+    st.header("Live HRV Waveform Playback")
+    if waveform is None:
+        st.info("No waveform available from the last run. Use Upload Video or Webcam Video and press Predict.")
+    else:
+        speed = st.slider("Playback speed (smaller=slower)", 0.01, 0.2, 0.03)
+        if st.button("Play Waveform"):
+            play_live_waveform(waveform, speed=speed)
+
+elif panel == "Doctor Mode":
+    st.header("Doctor Mode — Advanced Metrics")
+    if 'features' not in locals() or features is None:
+        st.info("No features available. Run prediction (video/webcam/manual) to compute advanced metrics.")
+    else:
+        docs = compute_doctor_metrics({k: float(features.get(k, np.nan)) for k in FEATURE_ORDER})
+        st.metric("SDNN (ms)", f"{docs['sdnn']:.1f}" if docs['sdnn'] else "N/A")
+        st.metric("LF/HF", f"{docs['lf_hf']:.2f}" if docs['lf_hf'] else "N/A")
+        st.metric("Estimated Heart Age", f"{docs['heart_age']} yrs")
+        st.markdown("### Frequency-domain plot")
+        fd = plot_frequency_domain({k: float(features.get(k, np.nan)) for k in FEATURE_ORDER})
+        if fd:
+            st.image(str(fd))
+        else:
+            st.info("Frequency-domain not available from current features (need RR series).")
+
+# reset panel dropdown if user chooses None in sidebar
+if panel == "None" and '_show_panel' in st.session_state:
+    st.session_state['_show_panel'] = None
+
+# End
