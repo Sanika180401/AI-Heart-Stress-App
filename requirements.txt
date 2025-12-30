@@ -1,0 +1,14 @@
+streamlit>=1.20.0
+opencv-python-headless>=4.7.0
+numpy>=1.23.0
+pillow>=9.0.0
+mediapipe>=0.8.11
+scipy>=1.9.0
+scikit-learn>=1.1.0
+matplotlib>=3.5.0
+pandas>=1.4.0
+xgboost>=1.7.0
+shap>=0.41.0
+openai>=0.27.0
+joblib
+tqdm
